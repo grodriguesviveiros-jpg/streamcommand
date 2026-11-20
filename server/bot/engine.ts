@@ -8,7 +8,7 @@ import {
   timeoutUser,
   type TwitchConnection,
 } from '../twitch';
-import { TwitchIRC, type ChatMessage } from './irc';
+import { chatMessageFromEvent, type ChatMessage } from './chat';
 import { EventSubClient } from './eventsub';
 
 type CommandRow = {
@@ -32,11 +32,11 @@ type AutomationRow = {
 };
 
 /**
- * Motor do bot de um workspace: mantém o chat (IRC) e os eventos (EventSub)
- * conectados, executa comandos, timers, automações, sorteios, enquetes e fila.
+ * Motor do bot de um workspace: lê o chat e recebe os eventos da Twitch pelo
+ * EventSub e responde pela API de chat (Helix). Executa comandos, timers,
+ * automações, sorteios, enquetes e fila.
  */
-class WorkspaceBot {
-  private irc: TwitchIRC | null = null;
+export class WorkspaceBot {
   private eventsub: EventSubClient | null = null;
   private conn: TwitchConnection | null = null;
   private token = '';
@@ -49,7 +49,9 @@ class WorkspaceBot {
     automations: [],
   };
   private cooldowns = new Map<string, number>();
-  private status: 'online' | 'offline' | 'error' = 'offline';
+  private recentMessageIds = new Set<string>();
+  private selfSentIds = new Set<string>();
+  private status: 'connected' | 'offline' | 'error' = 'offline';
 
   constructor(public workspaceId: string) {}
 
@@ -60,19 +62,6 @@ class WorkspaceBot {
     this.conn = conn;
     this.token = await ensureFreshToken(conn);
 
-    this.irc = new TwitchIRC({
-      login: conn.login,
-      token: this.token,
-      onMessage: (message) => {
-        this.onChat(message).catch((error) => console.error('[bot] chat', error));
-      },
-      onStatus: (status, detail) => {
-        this.status = status === 'connected' ? 'online' : status === 'error' ? 'error' : 'offline';
-        publish(this.workspaceId, { type: 'bot.status', data: { chat: status, detail, at: new Date().toISOString() } });
-      },
-    });
-    this.irc.start();
-
     this.eventsub = new EventSubClient({
       broadcasterId: conn.twitch_user_id,
       getToken: () => this.freshToken(),
@@ -80,7 +69,11 @@ class WorkspaceBot {
         this.onTwitchEvent(type, event).catch((error) => console.error('[bot] eventsub', error));
       },
       onStatus: (status, detail) => {
-        publish(this.workspaceId, { type: 'bot.eventsub', data: { status, detail, at: new Date().toISOString() } });
+        // "connected" só é publicado quando a assinatura do chat é aceita.
+        this.status = status === 'connected' ? 'connected' : status === 'error' ? 'error' : 'offline';
+        const at = new Date().toISOString();
+        publish(this.workspaceId, { type: 'bot.status', data: { chat: this.status, detail, at } });
+        publish(this.workspaceId, { type: 'bot.eventsub', data: { status, detail, at } });
       },
     });
     this.eventsub.start();
@@ -94,14 +87,11 @@ class WorkspaceBot {
     }, 20_000);
 
     this.started = true;
-    publish(this.workspaceId, { type: 'bot.status', data: { chat: 'connected', at: new Date().toISOString() } });
   }
 
   stop(): void {
-    this.irc?.stop();
     this.eventsub?.stop();
     if (this.tick) clearInterval(this.tick);
-    this.irc = null;
     this.eventsub = null;
     this.started = false;
     this.status = 'offline';
@@ -116,8 +106,19 @@ class WorkspaceBot {
     return ensureFreshToken(this.conn);
   }
 
-  async say(text: string): Promise<void> {
-    if (this.irc?.connected) this.irc.say(text);
+  /** Envia uma mensagem no chat pela API da Twitch (escopo user:write:chat). */
+  async say(text: string): Promise<boolean> {
+    try {
+      const conn = this.conn ?? (await getConnection(this.workspaceId));
+      if (!conn) return false;
+      this.conn = conn;
+      const messageId = await sendChatMessage(conn, await ensureFreshToken(conn), text);
+      if (messageId) remember(this.selfSentIds, messageId);
+      return true;
+    } catch (error) {
+      console.error('[bot] envio', this.workspaceId, error instanceof Error ? error.message : error);
+      return false;
+    }
   }
 
   private async data(): Promise<{ commands: CommandRow[]; automations: AutomationRow[] }> {
@@ -139,7 +140,12 @@ class WorkspaceBot {
     this.cache.at = 0;
   }
 
-  private async onChat(message: ChatMessage): Promise<void> {
+  /** Processa uma mensagem recebida do chat (EventSub `channel.chat.message`). */
+  async handleChatMessage(message: ChatMessage): Promise<void> {
+    if (message.messageId) {
+      if (this.recentMessageIds.has(message.messageId)) return;
+      remember(this.recentMessageIds, message.messageId);
+    }
     const display = message.displayName || message.username;
 
     await withWorkspace(this.workspaceId, async (q) => {
@@ -160,6 +166,10 @@ class WorkspaceBot {
       type: 'chat.message',
       data: { ...message, displayName: display, createdAt: new Date().toISOString() },
     });
+
+    // As respostas do bot voltam como evento do EventSub: aparecem no histórico,
+    // mas não podem disparar comandos/automações (evita responder a si mesmo).
+    if (message.messageId && this.selfSentIds.has(message.messageId)) return;
 
     const text = message.message.trim();
     if (!text.startsWith('!')) return;
@@ -200,7 +210,8 @@ class WorkspaceBot {
     if (Date.now() - last < command.cooldown_seconds * 1000) return;
     this.cooldowns.set(command.id, Date.now());
 
-    await this.say(command.response);
+    const sent = await this.say(command.response);
+    if (!sent) return;
     await withWorkspace(this.workspaceId, (q) =>
       q('update custom_commands set use_count = use_count + 1, last_used_at = now() where id = $1', [command.id]),
     );
@@ -283,6 +294,13 @@ class WorkspaceBot {
   }
 
   private async onTwitchEvent(type: string, event: Record<string, unknown>): Promise<void> {
+    if (type === 'channel.chat.message') {
+      if (!this.conn) return;
+      const message = chatMessageFromEvent(event, this.conn.twitch_user_id);
+      if (message) await this.handleChatMessage(message);
+      return;
+    }
+
     publish(this.workspaceId, { type: 'twitch.event', data: { type, event, at: new Date().toISOString() } });
 
     if (type === 'stream.online') {
@@ -379,8 +397,10 @@ class WorkspaceBot {
           const rendered = template
             .replace(/\{user\}/g, context.username ?? '')
             .replace(/\{viewers\}/g, String(context.viewers ?? ''));
-          await this.say(rendered);
-          return { ok: true, message: `Mensagem enviada: ${rendered.slice(0, 80)}` };
+          const sent = await this.say(rendered);
+          return sent
+            ? { ok: true, message: `Mensagem enviada: ${rendered.slice(0, 80)}` }
+            : { ok: false, message: 'Falha ao enviar mensagem no chat' };
         }
         case 'timeout_user': {
           if (!context.userId) return { ok: false, message: 'Sem usuário para moderar' };
@@ -415,8 +435,10 @@ class WorkspaceBot {
           const { commands } = await this.data();
           const command = commands.find((c) => c.name.toLowerCase() === name);
           if (!command) return { ok: false, message: `Comando !${name} não encontrado` };
-          await this.say(command.response);
-          return { ok: true, message: `Comando !${name} executado` };
+          const sent = await this.say(command.response);
+          return sent
+            ? { ok: true, message: `Comando !${name} executado` }
+            : { ok: false, message: 'Falha ao enviar mensagem no chat' };
         }
         default:
           return { ok: false, message: `Ação "${actionType}" só roda no aplicativo (OBS/som)` };
@@ -436,7 +458,8 @@ class WorkspaceBot {
       if (timer.only_when_live && !this.isLive) continue;
       const last = timer.last_sent_at ? new Date(timer.last_sent_at).getTime() : 0;
       if (Date.now() - last < timer.interval_seconds * 1000) continue;
-      await this.say(timer.message);
+      const sent = await this.say(timer.message);
+      if (!sent) continue;
       await withWorkspace(this.workspaceId, (q) =>
         q('update timers set last_sent_at = now() where id = $1', [timer.id]),
       );
@@ -459,6 +482,15 @@ class WorkspaceBot {
       );
     }
     publish(this.workspaceId, { type: 'twitch.live', data: status });
+  }
+}
+
+/** Mantém um conjunto limitado de IDs recentes (deduplicação do EventSub). */
+function remember(set: Set<string>, id: string): void {
+  set.add(id);
+  if (set.size > 500) {
+    const oldest = set.values().next().value;
+    if (oldest) set.delete(oldest);
   }
 }
 

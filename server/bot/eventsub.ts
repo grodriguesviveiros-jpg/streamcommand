@@ -25,8 +25,8 @@ export class EventSubClient {
     this.connect();
   }
 
-  private connect(): void {
-    const ws = new WebSocket('wss://eventsub.wss.twitch.tv/ws');
+  private connect(url = 'wss://eventsub.wss.twitch.tv/ws'): void {
+    const ws = new WebSocket(url);
     this.ws = ws;
 
     ws.addEventListener('message', (event) => {
@@ -36,6 +36,9 @@ export class EventSubClient {
     });
 
     ws.addEventListener('close', () => {
+      // Só a conexão atual pode mudar o estado: o socket antigo, fechado
+      // depois de uma migração da Twitch, não deve abrir outra conexão.
+      if (this.ws !== ws) return;
       this.opts.onStatus('disconnected');
       if (!this.closed) {
         this.retries += 1;
@@ -44,7 +47,9 @@ export class EventSubClient {
       }
     });
 
-    ws.addEventListener('error', () => this.opts.onStatus('error', 'Falha na conexão EventSub'));
+    ws.addEventListener('error', () => {
+      if (this.ws === ws) this.opts.onStatus('error', 'Falha na conexão EventSub');
+    });
   }
 
   private async handle(raw: string): Promise<void> {
@@ -58,19 +63,17 @@ export class EventSubClient {
         this.sessionId = message.payload.session.id;
         this.retries = 0;
         await this.subscribeAll();
-        this.opts.onStatus('connected');
         break;
       case 'notification':
         this.opts.onEvent(message.payload.subscription.type, message.payload.event);
         break;
       case 'session_reconnect': {
+        // A Twitch pede para migrar para outra conexão; abre a nova antes de
+        // fechar a antiga, que já não é mais `this.ws` e não reconecta sozinha.
         const url = message.payload.session.reconnect_url as string;
-        this.ws?.close();
-        const ws = new WebSocket(url);
-        this.ws = ws;
-        ws.addEventListener('message', (event) => {
-          if (typeof event.data === 'string') this.handle(event.data).catch(() => undefined);
-        });
+        const previous = this.ws;
+        this.connect(url);
+        previous?.close();
         break;
       }
       case 'revocation':
@@ -86,6 +89,11 @@ export class EventSubClient {
     const broadcaster = this.opts.broadcasterId;
     const subscriptions = [
       {
+        type: 'channel.chat.message',
+        version: '1',
+        condition: { broadcaster_user_id: broadcaster, user_id: broadcaster },
+      },
+      {
         type: 'channel.follow',
         version: '2',
         condition: { broadcaster_user_id: broadcaster, moderator_user_id: broadcaster },
@@ -95,6 +103,11 @@ export class EventSubClient {
       { type: 'stream.online', version: '1', condition: { broadcaster_user_id: broadcaster } },
       { type: 'stream.offline', version: '1', condition: { broadcaster_user_id: broadcaster } },
     ];
+
+    // O bot só está realmente ouvindo o chat quando a assinatura de mensagens
+    // é aceita; as demais assinaturas são complementares.
+    let chatReady = false;
+    const failures: string[] = [];
 
     for (const subscription of subscriptions) {
       const res = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
@@ -109,11 +122,29 @@ export class EventSubClient {
           transport: { method: 'websocket', session_id: this.sessionId },
         }),
       });
-      if (res.status === 409) continue; // assinatura já existente
+      if (res.status === 409) {
+        // Assinatura já existente para esta sessão.
+        if (subscription.type === 'channel.chat.message') chatReady = true;
+        continue;
+      }
       if (!res.ok) {
         const text = await res.text();
-        this.opts.onStatus('error', `${subscription.type}: ${res.status} ${text.slice(0, 160)}`);
+        failures.push(`${subscription.type}: ${res.status} ${text.slice(0, 120)}`);
+        continue;
       }
+      if (subscription.type === 'channel.chat.message') chatReady = true;
+    }
+
+    if (chatReady) {
+      this.opts.onStatus(
+        'connected',
+        failures.length ? `Assinaturas com falha: ${failures.join('; ')}` : undefined,
+      );
+    } else {
+      this.opts.onStatus(
+        'error',
+        `Chat da Twitch indisponível (${failures.join('; ') || 'assinatura de mensagens não criada'})`,
+      );
     }
   }
 

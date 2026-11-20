@@ -20,8 +20,11 @@ docker compose -f docker-compose.base44.yml up -d
 
 ## Integrações
 - Discord: OAuth2 com PKCE; o cookie de sessão é um JWT `sc_session` (httpOnly, 30 dias).
-- Twitch: OAuth do canal → tokens criptografados em `twitch_connections`; o bot abre IRC (`wss://irc-ws.chat.twitch.tv`)
-  e EventSub (`wss://eventsub.wss.twitch.tv/ws`) no servidor. Sem credenciais, `restartBot` simplesmente não conecta.
+- Twitch: OAuth do canal → tokens criptografados em `twitch_connections`; o bot lê o chat e recebe eventos pelo
+  EventSub (`wss://eventsub.wss.twitch.tv/ws`, assinatura `channel.chat.message`) e responde pela API de chat
+  (`POST /helix/chat/messages`). Não usa IRC: os escopos pedidos são `user:read:chat` / `user:write:chat` (o IRC exigia
+  `chat:read` / `chat:edit` e recusava o token). O status "connected" só aparece depois que a assinatura do chat é aceita.
+  Sem credenciais, `restartBot` simplesmente não conecta.
 - OBS: conexão `ws://` direto do navegador com o protocolo v5 (`src/lib/obs.ts`). Só funciona em http/localhost.
 
 ## Verificação rápida
