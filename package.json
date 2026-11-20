@@ -9,7 +9,8 @@
     "dev:api": "tsx watch --clear-screen=false server/index.ts",
     "migrate": "tsx server/migrate.ts",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test server/tests/*.test.ts"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
