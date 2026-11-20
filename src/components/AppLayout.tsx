@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../state/AppContext';
 import { Badge, Dot } from './ui';
+import TwitchOnboarding from './TwitchOnboarding';
 import { initials, ROLE_LABELS } from '../lib/format';
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; permission: string; end?: boolean };
@@ -231,6 +232,7 @@ export default function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <TwitchOnboarding />
     </div>
   );
 }

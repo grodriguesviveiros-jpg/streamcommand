@@ -171,16 +171,29 @@ Importante: o navegador só permite `ws://` a partir de páginas `http://`. Use
 
 ## 8. Supabase (opcional, para produção na nuvem)
 
-O app já usa PostgreSQL com RLS, exatamente o mesmo modelo do Supabase. Para migrar:
+O app já usa PostgreSQL com RLS forçado, exatamente o mesmo modelo do Supabase — não existe código
+específico de Supabase para escrever. Para apontar o app para lá:
 
 1. Crie um projeto em **https://supabase.com/dashboard**.
-2. Em **Project Settings → Database**, copie a connection string (modo "Session pooler").
-3. Rode as migrações apontando para esse banco:
+2. Em **Project Settings → Database**, copie a string do **Session pooler** (porta 5432) e acrescente
+   `?sslmode=require` no final — o `pg` liga o TLS a partir desse parâmetro, e sem ele a conexão é recusada.
+3. Rode as migrações contra o banco novo (elas criam o papel `sc_app` e todas as políticas de RLS):
    ```bash
-   DATABASE_URL="postgres://..." MIGRATION_DATABASE_URL="postgres://..." npm run migrate
+   MIGRATION_DATABASE_URL="postgres://postgres:...@...supabase.com:5432/postgres?sslmode=require" \
+   APP_DB_PASSWORD="<senha forte do sc_app>" npm run migrate
    ```
-4. Crie um papel de runtime `sc_app` (a migração já cria) e use a string dele no `DATABASE_URL`.
-5. **Nunca** coloque a `service_role` no frontend. O app não usa essa chave.
+4. Use duas strings diferentes no ambiente:
+   - `MIGRATION_DATABASE_URL` = usuário `postgres` (migrações e o serviço de bot).
+   - `DATABASE_URL` = usuário `sc_app` com a senha definida em `APP_DB_PASSWORD` (runtime, com RLS forçado).
+5. **Nunca** coloque a `service_role` no frontend. O app não usa essa chave nem o Supabase Auth.
+
+O que ainda não está pronto para a nuvem:
+- **Uploads** (avatares e soundboard) ficam no volume local `/app/uploads`, não no Supabase Storage.
+- **Sessão** é cookie JWT próprio (`sc_session`), não Supabase Auth.
+- No Compose, `DATABASE_URL` e `MIGRATION_DATABASE_URL` estão fixos no banco local; para usar Supabase eles
+  precisam sair do bloco `environment:` e virar defaults em `.env.base44-defaults`, para que os secrets
+  `DATABASE_URL` / `MIGRATION_DATABASE_URL` possam sobrescrevê-los.
+- Plano gratuito do Supabase pausa o projeto por inatividade — o bot cai junto.
 
 ---
 
