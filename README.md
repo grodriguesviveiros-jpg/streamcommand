@@ -2,6 +2,25 @@
 
 O **STREAM COMMAND** é uma plataforma web profissional para centralizar o gerenciamento de transmissões ao vivo na Twitch.
 
+## Início rápido
+
+```bash
+docker compose -f docker-compose.base44.yml up -d
+```
+
+Abra **http://localhost:3000**. Guia completo, passo a passo (Discord, Twitch, OBS e chaves):
+**[docs/CONFIGURACAO.md](docs/CONFIGURACAO.md)**.
+
+### Status das integrações
+
+| Área | Estado |
+| --- | --- |
+| App, workspaces, equipe, permissões, RLS | Funcionando |
+| Comandos, timers, automações, sorteios, enquetes, fila, soundboard, botões | Funcionando |
+| Login Discord | Implementado — depende de `DISCORD_CLIENT_ID`/`SECRET` |
+| Chat/eventos/moderação Twitch | Implementado — depende de `TWITCH_CLIENT_ID`/`SECRET` e da conta conectada |
+| OBS WebSocket (v5) | Implementado — depende do OBS local com WebSocket ativo |
+
 Repositório no GitHub: https://github.com/grodriguesviveiros-jpg/streamcommand
 
 Ele foi criado para permitir que vários streamers tenham seus próprios espaços de trabalho, equipes e configurações, sem que as informações sejam misturadas entre usuários.
