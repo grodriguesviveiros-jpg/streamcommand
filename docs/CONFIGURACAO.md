@@ -128,7 +128,8 @@ TWITCH_REDIRECT_URI=http://localhost:3000/api/integrations/twitch/callback
 ### Conectar sua conta
 1. Abra o app → **Configurações → Twitch**.
 2. Clique em **Conectar Twitch** e autorize os escopos solicitados.
-3. Pronto: o bot conecta ao chat e ao EventSub automaticamente.
+3. Pronto: o bot lê o chat pelo EventSub (`channel.chat.message`) e responde pela API de chat automaticamente.
+   O status **online** do bot só aparece depois que a assinatura do chat é aceita pela Twitch.
 
 Escopos usados e por quê:
 | Escopo | Para que serve |
@@ -224,6 +225,7 @@ O que ainda não está pronto para a nuvem:
 | "Login Discord não configurado" | faltam `DISCORD_CLIENT_ID`/`SECRET` | preencha os secrets e reinicie a API |
 | `redirect_uri mismatch` no Discord | URL não cadastrada no app | cadastre exatamente a URL do app |
 | Chat não aparece | Twitch não conectada | Configurações → Twitch → Conectar |
+| Bot não lê nem responde o chat | conexão sem `user:read:chat`/`user:write:chat` | Configurações → Twitch → Reconectar |
 | Bot não responde comandos | bot offline | verifique Configurações → Twitch e os logs da API |
 | OBS não conecta | página em HTTPS | use `http://localhost:3000` ou o app desktop |
 | Nada carrega | containers parados | `docker compose -f docker-compose.base44.yml up -d` |

@@ -40,7 +40,9 @@ export default {
         },
       },
       animation: {
-        'fade-up': 'fade-up 260ms ease-out both',
+        // Sem fill-mode: um transform residual no wrapper da página cria bloco de
+        // contenção e prende elementos `fixed` (modais) na coluna de conteúdo.
+        'fade-up': 'fade-up 260ms ease-out',
         'pulse-soft': 'pulseSoft 1.8s ease-in-out infinite',
       },
     },

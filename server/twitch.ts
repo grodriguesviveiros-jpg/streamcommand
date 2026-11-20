@@ -206,7 +206,7 @@ export async function getFollowerCount(conn: TwitchConnection, token: string): P
   }
 }
 
-export async function sendChatMessage(conn: TwitchConnection, token: string, message: string): Promise<void> {
+export async function sendChatMessage(conn: TwitchConnection, token: string, message: string): Promise<string | null> {
   const res = await fetch('https://api.twitch.tv/helix/chat/messages', {
     method: 'POST',
     headers: {
@@ -221,6 +221,14 @@ export async function sendChatMessage(conn: TwitchConnection, token: string, mes
     }),
   });
   if (!res.ok) throw new Error(`Envio de mensagem falhou (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const body = (await res.json().catch(() => null)) as {
+    data?: { message_id?: string; is_sent?: boolean; drop_reason?: { message?: string } }[];
+  } | null;
+  const entry = body?.data?.[0];
+  if (entry && entry.is_sent === false) {
+    throw new Error(`Envio recusado pela Twitch: ${entry.drop_reason?.message ?? 'motivo não informado'}`);
+  }
+  return entry?.message_id ?? null;
 }
 
 export async function timeoutUser(
