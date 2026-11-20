@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
@@ -38,6 +39,19 @@ app.use('/uploads', requireAuth, express.static(config.uploadDir, { maxAge: '1h'
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'Rota não encontrada.' });
 });
+
+/**
+ * Produção: o próprio servidor entrega o frontend compilado (dist), mantendo
+ * tudo na mesma origem — cookie de sessão e OAuth funcionam sem CORS.
+ * Em desenvolvimento o diretório não existe e o Vite (porta 3000) serve a interface.
+ */
+const distDir = path.join(process.cwd(), 'dist');
+if (fs.existsSync(path.join(distDir, 'index.html'))) {
+  app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
 
 app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error('[api]', error.message);

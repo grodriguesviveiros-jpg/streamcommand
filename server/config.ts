@@ -2,6 +2,8 @@
 /** URL pública do app: usada nos redirecionamentos OAuth. */
 function resolveAppUrl(): string {
   if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
+  // Render expõe a URL pública do serviço nesta variável.
+  if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '');
   const suffix = process.env.BASE44_PUBLIC_HOST_SUFFIX;
   return suffix ? `https://3000-${suffix}` : 'http://localhost:3000';
 }

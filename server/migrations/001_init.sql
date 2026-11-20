@@ -9,10 +9,19 @@
 create extension if not exists pgcrypto;
 
 do $$
+declare
+  can_manage boolean;
 begin
+  select rolsuper or rolcreaterole into can_manage from pg_roles where rolname = current_user;
   if not exists (select 1 from pg_roles where rolname = 'sc_app') then
-    execute format('create role sc_app login password %L', current_setting('app.db_password'));
-  else
+    if can_manage then
+      execute format('create role sc_app login password %L', current_setting('app.db_password'));
+    else
+      -- Banco gerenciado sem permissão para criar papéis (ex.: Render): a API
+      -- conecta com o próprio usuário do banco e o RLS forçado continua valendo.
+      raise notice 'Usuário % não pode criar o papel sc_app; seguindo sem ele.', current_user;
+    end if;
+  elsif can_manage then
     execute format('alter role sc_app with login password %L', current_setting('app.db_password'));
   end if;
 end $$;
@@ -381,6 +390,11 @@ end $$;
 -- ---------------------------------------------------------------------------
 -- Privilégios do papel de runtime (as políticas continuam valendo)
 -- ---------------------------------------------------------------------------
-grant usage on schema public to sc_app;
-grant select, insert, update, delete on all tables in schema public to sc_app;
-grant execute on all functions in schema public to sc_app;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'sc_app') then
+    execute 'grant usage on schema public to sc_app';
+    execute 'grant select, insert, update, delete on all tables in schema public to sc_app';
+    execute 'grant execute on all functions in schema public to sc_app';
+  end if;
+end $$;

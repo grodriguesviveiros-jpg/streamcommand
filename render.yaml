@@ -1,0 +1,53 @@
+# STREAM COMMAND — publicação no Render (https://render.com)
+#
+# Como usar: Render Dashboard → New + → Blueprint → escolha este repositório.
+# O Render cria os dois recursos abaixo automaticamente.
+#
+# Um único serviço web: o Express entrega a interface compilada (dist) e a API
+# na mesma origem, então cookie de sessão e OAuth funcionam sem CORS.
+services:
+  - type: web
+    name: stream-command
+    runtime: node
+    region: virginia
+    plan: free
+    branch: main
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run migrate && npx tsx server/index.ts
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: '22'
+      # Banco: a migração usa a conexão administrativa do Render; a API conecta
+      # com o papel restrito sc_app (senha em APP_DB_PASSWORD), que mantém o RLS
+      # forçado por workspace. APP_URL é lida de RENDER_EXTERNAL_URL.
+      - key: MIGRATION_DATABASE_URL
+        fromDatabase:
+          name: stream-command-db
+          property: connectionString
+      - key: APP_DB_PASSWORD
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      # Arquivos enviados (avatares e soundboard). Sem disco persistente eles
+      # somem a cada deploy/reinício — veja docs/RENDER.md.
+      - key: UPLOAD_DIR
+        value: uploads
+      # Credenciais externas: preencha no painel do Render (Environment).
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: TWITCH_CLIENT_ID
+        sync: false
+      - key: TWITCH_CLIENT_SECRET
+        sync: false
+
+databases:
+  - name: stream-command-db
+    region: virginia
+    plan: free
+    postgresMajorVersion: '16'
+    databaseName: stream_command

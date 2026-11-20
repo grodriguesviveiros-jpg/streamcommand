@@ -31,6 +31,15 @@ docker compose -f docker-compose.base44.yml exec -T api npx tsc --noEmit
 docker compose -f docker-compose.base44.yml exec -T web npx vite build
 ```
 
+## Deploy (Render)
+- `render.yaml` define um único Web Service + PostgreSQL. O Express serve `dist/` (SPA) e a API na
+  mesma origem quando `dist/index.html` existe; em desenvolvimento o Vite continua servindo a interface.
+- `APP_URL` é lida de `RENDER_EXTERNAL_URL`; o runtime tenta o papel `sc_app` derivado de
+  `MIGRATION_DATABASE_URL` + `APP_DB_PASSWORD` e, se ele não existir no banco, conecta com o próprio usuário
+  do banco (o RLS forçado continua valendo; avisa no log se esse usuário ignorar RLS). O Compose continua
+  definindo `DATABASE_URL` explicitamente, então nada muda em desenvolvimento.
+- Guia do usuário: `docs/RENDER.md`.
+
 ## Preview (Base44)
 - `vite.config.ts` libera o host do preview quando `BASE44_PREVIEW_MODE === '1'` (usa
   `BASE44_SANDBOX_HOST_DOMAIN`). Sem a variável, `allowedHosts` fica no padrão.
