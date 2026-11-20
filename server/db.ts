@@ -94,6 +94,14 @@ export async function withContext<T>(ctx: Context, fn: (q: Query) => Promise<T>)
   }
 }
 
+/** Fecha o pool de runtime (usado pelos testes para o processo terminar). */
+export async function closePool(): Promise<void> {
+  if (!poolPromise) return;
+  const pool = await poolPromise;
+  await pool.end();
+  poolPromise = null;
+}
+
 /** Consulta administrativa (superuser) usada apenas pelo serviço de bot. */
 export const adminPool = new pg.Pool({
   connectionString: process.env.MIGRATION_DATABASE_URL,

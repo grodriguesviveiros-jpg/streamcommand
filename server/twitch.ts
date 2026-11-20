@@ -1,6 +1,6 @@
 import { config } from './config';
 import { decryptSecret, encryptSecret } from './crypto';
-import { withWorkspace } from './db';
+import { withContext, withWorkspace } from './db';
 
 export type TwitchConnection = {
   id: string;
@@ -51,7 +51,9 @@ export async function saveConnection(
     userId: string;
   },
 ): Promise<void> {
-  await withWorkspace(workspaceId, async (q) => {
+  // O update em workspaces exige app.user_id: a política de RLS valida que quem
+  // escreve é o dono (ou um membro) do workspace ativo.
+  await withContext({ userId: data.userId, workspaceId }, async (q) => {
     await q(
       `insert into twitch_connections
          (workspace_id, twitch_user_id, login, display_name, avatar_url, broadcaster_type, scopes,
