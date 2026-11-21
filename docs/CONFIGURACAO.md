@@ -37,7 +37,7 @@ Navegador (React + TypeScript + Vite, porta 3000)
 API Node/Express (porta 4000)
         ├── OAuth Discord (PKCE) e sessão assinada
         ├── OAuth Twitch + tokens criptografados (AES-256-GCM)
-        ├── Motor do bot: chat (IRC/WebSocket), EventSub, comandos, timers, automações
+        ├── Motor do bot: EventSub (eventos do canal + chat), API de chat, comandos, timers, automações
         └── PostgreSQL (RLS forçado por workspace)
 ```
 
@@ -125,22 +125,33 @@ TWITCH_CLIENT_SECRET=...
 TWITCH_REDIRECT_URI=http://localhost:3000/api/integrations/twitch/callback
 ```
 
-### Conectar sua conta
-1. Abra o app → **Configurações → Twitch**.
-2. Clique em **Conectar Twitch** e autorize os escopos solicitados.
-3. Pronto: o bot lê o chat pelo EventSub (`channel.chat.message`) e responde pela API de chat automaticamente.
-   O status **online** do bot só aparece depois que a assinatura do chat é aceita pela Twitch.
+### Conectar as duas contas (streamer + bot)
+O app usa **duas conexões Twitch independentes** por workspace. Abra **Configurações → Twitch** e
+preencha os dois cards:
+
+1. **Conta do streamer** — conta principal do canal. Identifica a live, consulta informações do canal e
+   recebe follows, inscrições, raids e o início/fim da transmissão.
+2. **Conta do bot** — segunda conta, separada. Envia mensagens no chat, responde comandos, automações e
+   timers. Pode ser uma conta Twitch diferente da conta do streamer; cada uma autentica no próprio OAuth.
+
+A conta do streamer autoriza `channel:bot`, permitindo ao aplicativo falar no chat do canal pela conta
+do bot. Sem a conta do bot conectada, a interface informa que os recursos de envio estão indisponíveis.
 
 Escopos usados e por quê:
-| Escopo | Para que serve |
-| --- | --- |
-| `user:read:email` | identificar a conta conectada |
-| `user:read:chat`, `user:write:chat` | ler e enviar mensagens no chat |
-| `moderator:manage:banned_users` | aplicar timeout/ban |
-| `moderator:read:followers` | receber evento de novos seguidores |
-| `channel:read:subscriptions` | receber evento de inscrições |
+| Conta | Escopo | Para que serve |
+| --- | --- | --- |
+| streamer | `user:read:email` | identificar a conta conectada |
+| streamer | `channel:bot` | autorizar o app a enviar/ler o chat do canal como bot |
+| streamer | `moderator:read:followers` | receber evento de novos seguidores |
+| streamer | `moderator:manage:banned_users` | aplicar timeout/ban |
+| streamer | `channel:read:subscriptions` | receber evento de inscrições |
+| bot | `user:bot` | entrar no chat com a identidade de bot |
+| bot | `user:read:chat` | ler as mensagens do chat |
+| bot | `user:write:chat` | enviar mensagens no chat |
 
-> Os tokens são renovados automaticamente e ficam **criptografados** no banco (AES-256-GCM).
+> Cada conta tem tokens próprios, renovados de forma independente e **criptografados** no banco
+> (AES-256-GCM). Ao desconectar, os tokens são revogados na Twitch; desconectar o bot não afeta o streamer
+> e vice-versa.
 
 ---
 
@@ -225,7 +236,7 @@ O que ainda não está pronto para a nuvem:
 | "Login Discord não configurado" | faltam `DISCORD_CLIENT_ID`/`SECRET` | preencha os secrets e reinicie a API |
 | `redirect_uri mismatch` no Discord | URL não cadastrada no app | cadastre exatamente a URL do app |
 | Chat não aparece | Twitch não conectada | Configurações → Twitch → Conectar |
-| Bot não lê nem responde o chat | conexão sem `user:read:chat`/`user:write:chat` | Configurações → Twitch → Reconectar |
+| Bot não lê nem responde o chat | conta do bot sem `user:read:chat`/`user:write:chat` ou streamer sem `channel:bot` | Configurações → Twitch → Reconectar a conta indicada |
 | Bot não responde comandos | bot offline | verifique Configurações → Twitch e os logs da API |
 | OBS não conecta | página em HTTPS | use `http://localhost:3000` ou o app desktop |
 | Nada carrega | containers parados | `docker compose -f docker-compose.base44.yml up -d` |

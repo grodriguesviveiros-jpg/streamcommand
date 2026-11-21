@@ -30,7 +30,7 @@ export default function TwitchOnboarding() {
     !dismissed &&
     can('twitch.manage') &&
     Boolean(twitch.data?.configured) &&
-    !twitch.data?.connection;
+    !twitch.data?.connections?.streamer;
 
   return (
     <Modal
@@ -51,13 +51,14 @@ export default function TwitchOnboarding() {
     >
       <div className="space-y-3 text-xs leading-relaxed text-mist-300">
         <p>
-          Com a conta conectada, o bot lê e envia mensagens no chat, aplica comandos, timers e automações, recebe
-          follows, inscrições e raids via EventSub — e as estatísticas do painel passam a mostrar dados reais.
+          Comece pela conta principal do canal: ela identifica a live e recebe follows, inscrições e raids via
+          EventSub. Depois, em Configurações → Twitch, conecte uma segunda conta para o bot ler e enviar mensagens no
+          chat, responder comandos e postar timers.
         </p>
         <ul className="space-y-1.5 text-mist-400">
           <li>• A autorização acontece na própria Twitch, no seu navegador.</li>
-          <li>• Os tokens ficam criptografados no servidor e são renovados automaticamente.</li>
-          <li>• Você pode desconectar quando quiser em Configurações → Twitch.</li>
+          <li>• Cada conta tem tokens próprios, criptografados no servidor e renovados automaticamente.</li>
+          <li>• Você pode desconectar cada conta separadamente em Configurações → Twitch.</li>
         </ul>
         <p className="text-mist-500">Sem conectar, o app abre normalmente, mas em modo somente cadastro.</p>
       </div>

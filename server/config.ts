@@ -38,12 +38,30 @@ export const discordRedirectUri = () =>
 export const twitchRedirectUri = () =>
   config.twitch.redirectUri || `${config.appUrl}/api/integrations/twitch/callback`;
 
-/** Escopos Twitch usados pelo bot, chat e moderação. */
-export const TWITCH_SCOPES = [
+/**
+ * Escopos da conta do streamer: identidade, eventos do canal, moderação e a
+ * autorização `channel:bot` que permite ao aplicativo falar no chat do canal
+ * pela conta do bot (Send Chat Message / EventSub de chat).
+ * Referência: https://dev.twitch.tv/docs/authentication/scopes/
+ */
+export const TWITCH_STREAMER_SCOPES = [
   'user:read:email',
-  'user:read:chat',
-  'user:write:chat',
-  'moderator:manage:banned_users',
+  'channel:bot',
   'moderator:read:followers',
+  'moderator:manage:banned_users',
   'channel:read:subscriptions',
-].join(' ');
+];
+
+/**
+ * Escopos da conta do bot: entrar no chat como bot, ler e enviar mensagens.
+ * O envio também depende do `channel:bot` autorizado pelo streamer.
+ * Referência: https://dev.twitch.tv/docs/chat/authenticating/
+ */
+export const TWITCH_BOT_SCOPES = ['user:bot', 'user:read:chat', 'user:write:chat'];
+
+export const TWITCH_SCOPES_BY_TYPE = {
+  streamer: TWITCH_STREAMER_SCOPES,
+  bot: TWITCH_BOT_SCOPES,
+} as const;
+
+export type TwitchAccountType = keyof typeof TWITCH_SCOPES_BY_TYPE;

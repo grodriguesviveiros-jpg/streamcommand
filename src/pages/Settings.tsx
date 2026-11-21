@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Check, ExternalLink, LogOut, Palette, Radio, ShieldCheck, User } from 'lucide-react';
-import { del, get, patch, put } from '../lib/api';
+import { Check, ExternalLink, LogOut, Palette, ShieldCheck, User } from 'lucide-react';
+import { get, patch, put } from '../lib/api';
 import { useApi, useSubmit } from '../lib/hooks';
 import { useApp } from '../state/AppContext';
 import type { TwitchConnectionInfo } from '../lib/types';
 import { Badge, Button, Card, ColorField, ConfirmButton, ErrorBanner, Field, Input, PageHeader, Select, Spinner, SuccessBanner, Tabs, Toggle } from '../components/ui';
 import { formatDateTime } from '../lib/format';
+import TwitchAccountCard from '../components/TwitchAccountCard';
 
 const SECTIONS = [
   { value: 'perfil', label: 'Perfil' },
@@ -68,13 +69,6 @@ export default function Settings() {
     await submit.run(async () => {
       await put('/integrations/obs', obs);
     }, 'Configuração do OBS salva.');
-  };
-
-  const disconnectTwitch = async () => {
-    await submit.run(async () => {
-      await del('/integrations/twitch');
-      await twitch.reload();
-    }, 'Conta Twitch desconectada.');
   };
 
   return (
@@ -228,64 +222,54 @@ export default function Settings() {
       ) : null}
 
       {active === 'twitch' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card className="p-5">
-            <div className="flex items-center gap-2">
-              <Radio size={15} style={{ color: 'var(--secondary)' }} />
-              <h2 className="text-sm font-semibold text-white">Conta Twitch</h2>
-            </div>
-            {twitch.loading ? <Spinner /> : null}
-            {twitch.data?.connection ? (
-              <div className="mt-4">
-                <div className="flex items-center gap-3">
-                  {twitch.data.connection.avatarUrl ? (
-                    <img src={twitch.data.connection.avatarUrl} alt="" className="h-11 w-11 rounded-full border border-white/10" />
-                  ) : null}
-                  <div>
-                    <p className="text-sm font-semibold text-white">{twitch.data.connection.displayName}</p>
-                    <p className="text-[11px] text-mist-400">twitch.tv/{twitch.data.connection.login}</p>
-                  </div>
-                  <Badge tone="success" >conectada</Badge>
-                </div>
-                <p className="mt-3 text-[11px] text-mist-500">
-                  conectada em {formatDateTime(twitch.data.connection.connectedAt)} · token expira em{' '}
-                  {formatDateTime(twitch.data.connection.expiresAt)}
-                </p>
-                <p className="mt-2 text-[11px] text-mist-400">
-                  Escopos: <span className="font-mono text-[10px]">{twitch.data.connection.scopes.join(' ')}</span>
-                </p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <a href={`/api/integrations/twitch/start?workspace=${workspace?.id}`} className="btn-secondary">
-                    Reconectar
-                  </a>
-                  <ConfirmButton onConfirm={() => void disconnectTwitch()} confirmLabel="Desconectar?">
-                    Desconectar
-                  </ConfirmButton>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-4">
-                <p className="text-[11px] leading-relaxed text-mist-400">
-                  Conecte o canal para o bot ler o chat, enviar mensagens, moderar e receber eventos (follows, inscrições
-                  e raids) via EventSub.
-                </p>
-                {twitch.data?.configured ? (
-                  <a href={`/api/integrations/twitch/start?workspace=${workspace?.id}`} className="btn-primary mt-3">
-                    Conectar Twitch
-                  </a>
-                ) : (
-                  <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-                    Defina TWITCH_CLIENT_ID e TWITCH_CLIENT_SECRET nos secrets do projeto. Veja docs/CONFIGURACAO.md.
-                  </p>
-                )}
-              </div>
-            )}
+        <div className="space-y-4">
+          <Card className="p-4">
+            <p className="text-[11px] leading-relaxed text-mist-300">
+              O STREAM COMMAND trabalha com <strong className="text-white">duas contas Twitch independentes</strong> por
+              workspace. A conta do <strong className="text-white">streamer</strong> identifica o canal e recebe os
+              eventos (follows, inscrições, raids e live). A conta do <strong className="text-white">bot</strong> é uma
+              segunda conta, separada, usada para enviar mensagens, responder comandos e postar timers. Cada conexão tem
+              seus próprios tokens, escopos e estado.
+            </p>
+            {twitch.data?.sameAccount ? (
+              <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                As duas conexões usam a mesma conta Twitch. Para separar as identidades no chat, conecte uma conta
+                diferente na conta do bot.
+              </p>
+            ) : null}
+            {twitch.data && !twitch.data.connections?.bot ? (
+              <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+                Conta do bot não conectada: os recursos de envio pelo bot (mensagens automáticas, comandos e timers)
+                estão indisponíveis até conectar uma conta.
+              </p>
+            ) : null}
           </Card>
+
+          {twitch.loading ? <Spinner /> : null}
+
+          <div className="grid items-start gap-4 lg:grid-cols-2">
+            <TwitchAccountCard
+              type="streamer"
+              account={twitch.data?.connections?.streamer ?? null}
+              configured={Boolean(twitch.data?.configured)}
+              workspaceId={workspace?.id}
+              requiredScopes={twitch.data?.requiredScopes?.streamer ?? []}
+              onChanged={() => twitch.reload()}
+            />
+            <TwitchAccountCard
+              type="bot"
+              account={twitch.data?.connections?.bot ?? null}
+              configured={Boolean(twitch.data?.configured)}
+              workspaceId={workspace?.id}
+              requiredScopes={twitch.data?.requiredScopes?.bot ?? []}
+              onChanged={() => twitch.reload()}
+            />
+          </div>
 
           <Card className="p-5">
             <h2 className="text-sm font-semibold text-white">Configuração necessária no Twitch Developer</h2>
             <p className="mt-1 text-[11px] text-mist-400">
-              No console da Twitch, cadastre exatamente esta URL de redirecionamento:
+              No console da Twitch, cadastre exatamente esta URL de redirecionamento (serve para as duas contas):
             </p>
             <code className="mt-2 block break-all rounded-lg bg-black/30 px-3 py-2 text-[11px] text-mist-200">
               {twitch.data?.redirectUri ?? `${window.location.origin}/api/integrations/twitch/callback`}
@@ -299,8 +283,9 @@ export default function Settings() {
               Abrir Twitch Developer Console <ExternalLink size={11} />
             </a>
             <p className="mt-3 text-[11px] leading-relaxed text-mist-500">
-              O bot usa o mesmo token do canal conectado — não é necessário criar um bot separado. Tokens são
-              armazenados criptografados (AES-256-GCM) e renovados automaticamente.
+              Cada conta autoriza o aplicativo separadamente no OAuth da Twitch. Tokens ficam criptografados no servidor
+              (AES-256-GCM), são renovados por conta e revogados na Twitch ao desconectar. O Client Secret nunca é enviado
+              ao navegador.
             </p>
           </Card>
         </div>

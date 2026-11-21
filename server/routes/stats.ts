@@ -60,7 +60,7 @@ router.get('/overview', async (req, res) => {
     };
   });
 
-  const connection = await getConnection(workspaceId);
+  const connection = await getConnection(workspaceId, 'streamer');
   let live: Record<string, unknown> | null = null;
   if (connection) {
     try {

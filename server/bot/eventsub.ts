@@ -1,15 +1,26 @@
 import { config } from '../config';
 
-type Options = {
-  broadcasterId: string;
+export type EventSubSubscription = {
+  type: string;
+  version: string;
+  condition: Record<string, string>;
+  /** Cada assinatura pode usar o token da conta responsável por ela. */
   getToken: () => Promise<string>;
+};
+
+type Options = {
+  subscriptions: EventSubSubscription[];
+  /** Tipos que precisam ser aceitos para a conexão ser considerada pronta. */
+  requiredTypes: string[];
   onEvent: (type: string, event: Record<string, unknown>) => void;
   onStatus: (status: 'connected' | 'disconnected' | 'error', detail?: string) => void;
 };
 
 /**
- * Conexão EventSub por WebSocket: recebe follows, inscrições, raids e
- * mudanças de estado da live sem precisar de URL pública de webhook.
+ * Conexão EventSub por WebSocket: recebe follows, inscrições, raids, mudanças
+ * de estado da live e mensagens do chat sem precisar de URL pública de webhook.
+ * As assinaturas de chat usam o token da conta do bot; as do canal usam o token
+ * da conta do streamer.
  */
 export class EventSubClient {
   private ws: WebSocket | null = null;
@@ -85,57 +96,46 @@ export class EventSubClient {
   }
 
   private async subscribeAll(): Promise<void> {
-    const token = await this.opts.getToken();
-    const broadcaster = this.opts.broadcasterId;
-    const subscriptions = [
-      {
-        type: 'channel.chat.message',
-        version: '1',
-        condition: { broadcaster_user_id: broadcaster, user_id: broadcaster },
-      },
-      {
-        type: 'channel.follow',
-        version: '2',
-        condition: { broadcaster_user_id: broadcaster, moderator_user_id: broadcaster },
-      },
-      { type: 'channel.subscribe', version: '1', condition: { broadcaster_user_id: broadcaster } },
-      { type: 'channel.raid', version: '1', condition: { to_broadcaster_user_id: broadcaster } },
-      { type: 'stream.online', version: '1', condition: { broadcaster_user_id: broadcaster } },
-      { type: 'stream.offline', version: '1', condition: { broadcaster_user_id: broadcaster } },
-    ];
-
-    // O bot só está realmente ouvindo o chat quando a assinatura de mensagens
-    // é aceita; as demais assinaturas são complementares.
-    let chatReady = false;
+    const accepted = new Set<string>();
     const failures: string[] = [];
 
-    for (const subscription of subscriptions) {
-      const res = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
-        method: 'POST',
-        headers: {
-          'Client-Id': config.twitch.clientId,
-          Authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          ...subscription,
-          transport: { method: 'websocket', session_id: this.sessionId },
-        }),
-      });
-      if (res.status === 409) {
-        // Assinatura já existente para esta sessão.
-        if (subscription.type === 'channel.chat.message') chatReady = true;
-        continue;
+    for (const subscription of this.opts.subscriptions) {
+      try {
+        const token = await subscription.getToken();
+        const res = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
+          method: 'POST',
+          headers: {
+            'Client-Id': config.twitch.clientId,
+            Authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            type: subscription.type,
+            version: subscription.version,
+            condition: subscription.condition,
+            transport: { method: 'websocket', session_id: this.sessionId },
+          }),
+        });
+        if (res.status === 409) {
+          // Assinatura já existente para esta sessão.
+          accepted.add(subscription.type);
+          continue;
+        }
+        if (!res.ok) {
+          const text = await res.text();
+          failures.push(`${subscription.type}: ${res.status} ${text.slice(0, 120)}`);
+          continue;
+        }
+        accepted.add(subscription.type);
+      } catch (error) {
+        failures.push(
+          `${subscription.type}: ${error instanceof Error ? error.message.slice(0, 120) : 'falha ao obter token'}`,
+        );
       }
-      if (!res.ok) {
-        const text = await res.text();
-        failures.push(`${subscription.type}: ${res.status} ${text.slice(0, 120)}`);
-        continue;
-      }
-      if (subscription.type === 'channel.chat.message') chatReady = true;
     }
 
-    if (chatReady) {
+    const missing = this.opts.requiredTypes.filter((type) => !accepted.has(type));
+    if (!missing.length) {
       this.opts.onStatus(
         'connected',
         failures.length ? `Assinaturas com falha: ${failures.join('; ')}` : undefined,
@@ -143,7 +143,7 @@ export class EventSubClient {
     } else {
       this.opts.onStatus(
         'error',
-        `Chat da Twitch indisponível (${failures.join('; ') || 'assinatura de mensagens não criada'})`,
+        `Assinaturas ausentes (${missing.join(', ')})${failures.length ? `: ${failures.join('; ')}` : ''}`,
       );
     }
   }

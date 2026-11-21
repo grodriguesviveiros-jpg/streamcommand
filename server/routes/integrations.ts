@@ -1,44 +1,93 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { config, isTwitchConfigured, TWITCH_SCOPES, twitchRedirectUri } from '../config';
+import {
+  config,
+  isTwitchConfigured,
+  TWITCH_BOT_SCOPES,
+  TWITCH_SCOPES_BY_TYPE,
+  TWITCH_STREAMER_SCOPES,
+  twitchRedirectUri,
+} from '../config';
 import { loadWorkspace, requireAuth, requirePermission } from '../auth';
 import { withContext } from '../db';
 import { decryptSecret, encryptSecret, pkcePair, randomToken } from '../crypto';
-import { deleteConnection, ensureFreshToken, getConnection, getFollowerCount, getLiveStatus, saveConnection } from '../twitch';
-import { botStatus, restartBot, stopBot } from '../bot/engine';
+import {
+  deleteConnection,
+  ensureFreshToken,
+  getConnection,
+  getConnections,
+  getFollowerCount,
+  getLiveStatus,
+  revokeToken,
+  saveConnection,
+  setConnectionStatus,
+  TwitchAuthError,
+  validateToken,
+  type TwitchConnection,
+  type TwitchConnectionType,
+} from '../twitch';
+import { botStatus, restartBot } from '../bot/engine';
 import { logActivity } from '../activity';
 import { permissionsOf } from '../permissions';
 
 const router = Router();
 router.use(requireAuth);
 
-/** Resumo da conexão Twitch (nunca devolve tokens). */
+const ACCOUNT_LABEL: Record<TwitchConnectionType, string> = {
+  streamer: 'Conta do streamer',
+  bot: 'Conta do bot',
+};
+
+function accountType(value: unknown): TwitchConnectionType {
+  return value === 'bot' ? 'bot' : 'streamer';
+}
+
+/** Resumo de uma conexão (nunca devolve tokens). */
+function summarize(connection: TwitchConnection | null, required: string[]) {
+  if (!connection) return null;
+  return {
+    id: connection.id,
+    twitchUserId: connection.twitch_user_id,
+    login: connection.login,
+    displayName: connection.display_name,
+    avatarUrl: connection.avatar_url,
+    broadcasterType: connection.broadcaster_type,
+    scopes: connection.scopes,
+    status: connection.status,
+    connectedAt: connection.connected_at,
+    expiresAt: connection.expires_at,
+    missingScopes: required.filter((scope) => !connection.scopes.includes(scope)),
+  };
+}
+
+/** Resumo das duas conexões Twitch do workspace. */
 router.get('/twitch', loadWorkspace, requirePermission('dashboard.view'), async (req, res) => {
-  const connection = await getConnection(req.workspace!.id);
+  const connections = await getConnections(req.workspace!.id);
   res.json({
     configured: isTwitchConfigured(),
     redirectUri: twitchRedirectUri(),
     bot: botStatus(req.workspace!.id),
-    connection: connection
-      ? {
-          login: connection.login,
-          displayName: connection.display_name,
-          avatarUrl: connection.avatar_url,
-          broadcasterType: connection.broadcaster_type,
-          scopes: connection.scopes,
-          connectedAt: connection.connected_at,
-          expiresAt: connection.expires_at,
-        }
-      : null,
+    connections: {
+      streamer: summarize(connections.streamer, TWITCH_STREAMER_SCOPES),
+      bot: summarize(connections.bot, TWITCH_BOT_SCOPES),
+    },
+    requiredScopes: {
+      streamer: TWITCH_STREAMER_SCOPES,
+      bot: TWITCH_BOT_SCOPES,
+    },
+    sameAccount:
+      Boolean(connections.streamer && connections.bot) &&
+      connections.streamer!.twitch_user_id === connections.bot!.twitch_user_id,
   });
 });
 
-/** Inicia o OAuth da Twitch para vincular o canal ao workspace ativo. */
+/** Inicia o OAuth da Twitch para vincular a conta do streamer ou do bot. */
 router.get('/twitch/start', async (req, res) => {
   if (!isTwitchConfigured()) {
     res.status(503).json({ error: 'Integração Twitch não configurada (TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET).' });
     return;
   }
+  const type = accountType(req.query.type);
   const workspaceId = String(req.query.workspace ?? '');
   const membership = await withContext({ userId: req.user!.id, workspaceId }, async (q) => {
     const { rows } = await q<{ role: string; permissions: string[] }>(
@@ -54,33 +103,47 @@ router.get('/twitch/start', async (req, res) => {
 
   const { verifier, challenge } = pkcePair();
   const state = randomToken(16);
-  res.cookie('sc_twitch', jwt.sign({ state, verifier, ws: workspaceId }, config.sessionSecret, { expiresIn: '10m' }), {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: config.appUrl.startsWith('https'),
-    maxAge: 10 * 60 * 1000,
-    path: '/',
-  });
+  res.cookie(
+    'sc_twitch',
+    jwt.sign({ state, verifier, ws: workspaceId, type }, config.sessionSecret, { expiresIn: '10m' }),
+    {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.appUrl.startsWith('https'),
+      maxAge: 10 * 60 * 1000,
+      path: '/',
+    },
+  );
 
   const url = new URL('https://id.twitch.tv/oauth2/authorize');
   url.searchParams.set('client_id', config.twitch.clientId);
   url.searchParams.set('redirect_uri', twitchRedirectUri());
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', TWITCH_SCOPES);
+  url.searchParams.set('scope', TWITCH_SCOPES_BY_TYPE[type].join(' '));
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
+  // Garante a escolha explícita da conta: no bot isso permite entrar com uma
+  // conta diferente da que já está logada na Twitch.
+  url.searchParams.set('force_verify', 'true');
   res.redirect(url.toString());
 });
 
 router.get('/twitch/callback', async (req, res) => {
+  let type: TwitchConnectionType = 'streamer';
   try {
     const code = String(req.query.code ?? '');
     const state = String(req.query.state ?? '');
     const cookie = (req.cookies as Record<string, string> | undefined)?.sc_twitch;
     if (!cookie || !code) throw new Error('Fluxo de autorização inválido');
 
-    const payload = jwt.verify(cookie, config.sessionSecret) as { state: string; verifier: string; ws: string };
+    const payload = jwt.verify(cookie, config.sessionSecret) as {
+      state: string;
+      verifier: string;
+      ws: string;
+      type?: string;
+    };
+    type = accountType(payload.type);
     if (payload.state !== state) throw new Error('Estado OAuth inválido');
 
     const body = new URLSearchParams({
@@ -114,7 +177,7 @@ router.get('/twitch/callback', async (req, res) => {
     const twitchUser = users.data[0];
     if (!twitchUser) throw new Error('Conta Twitch não retornada');
 
-    await saveConnection(payload.ws, {
+    await saveConnection(payload.ws, type, {
       twitchUserId: twitchUser.id,
       login: twitchUser.login,
       displayName: twitchUser.display_name,
@@ -132,38 +195,116 @@ router.get('/twitch/callback', async (req, res) => {
         workspaceId: payload.ws,
         userId: req.user!.id,
         actorName: req.user!.username,
-        action: 'twitch.conectado',
+        action: type === 'bot' ? 'twitch.bot.conectado' : 'twitch.streamer.conectado',
         target: twitchUser.login,
       }),
     );
 
     await restartBot(payload.ws);
     res.clearCookie('sc_twitch', { path: '/' });
-    res.redirect(`${config.appUrl}/app/configuracoes/twitch?twitch=connected`);
+    res.redirect(`${config.appUrl}/app/configuracoes/twitch?twitch=connected&type=${type}`);
   } catch (error) {
     const message = encodeURIComponent(error instanceof Error ? error.message : 'Falha na conexão Twitch');
-    res.redirect(`${config.appUrl}/app/configuracoes/twitch?erro=${message}`);
+    res.redirect(`${config.appUrl}/app/configuracoes/twitch?erro=${message}&type=${type}`);
   }
 });
 
+/** Desconecta somente a conta indicada (streamer ou bot). */
 router.delete('/twitch', loadWorkspace, requirePermission('twitch.manage'), async (req, res) => {
-  await deleteConnection(req.workspace!.id);
-  stopBot(req.workspace!.id);
+  const type = accountType(req.query.type);
+  const connection = await getConnection(req.workspace!.id, type);
+  if (connection) {
+    // Revogação oficial na Twitch: access token e refresh token, best-effort.
+    await revokeToken(connection.access_token);
+    await revokeToken(connection.refresh_token);
+    await deleteConnection(req.workspace!.id, type);
+  }
+  await restartBot(req.workspace!.id);
   await withContext({ userId: req.user!.id, workspaceId: req.workspace!.id }, (q) =>
     logActivity(q, {
       workspaceId: req.workspace!.id,
       userId: req.user!.id,
       actorName: req.user!.username,
-      action: 'twitch.desconectado',
+      action: type === 'bot' ? 'twitch.bot.desconectado' : 'twitch.streamer.desconectado',
     }),
   );
-  res.json({ ok: true });
+  res.json({ ok: true, type, bot: botStatus(req.workspace!.id) });
 });
 
-/** Dados reais da live (espectadores, título, jogo, seguidores). */
+/** Testa a conexão da conta indicada: renova o token e consulta /validate. */
+router.post('/twitch/:type/test', loadWorkspace, requirePermission('twitch.manage'), async (req, res) => {
+  const type = accountType(req.params.type);
+  const connection = await getConnection(req.workspace!.id, type);
+  if (!connection) {
+    res.status(400).json({ ok: false, error: `${ACCOUNT_LABEL[type]} não está conectada.` });
+    return;
+  }
+  try {
+    const token = await ensureFreshToken(connection);
+    const validation = await validateToken(token);
+    res.json({
+      ok: true,
+      type,
+      login: validation.login ?? connection.login,
+      userId: validation.userId ?? connection.twitch_user_id,
+      scopes: validation.scopes,
+      expiresIn: validation.expiresIn,
+      message: `${ACCOUNT_LABEL[type]} respondeu normalmente na Twitch.`,
+    });
+  } catch (error) {
+    if (error instanceof TwitchAuthError) {
+      res.status(401).json({ ok: false, error: error.message });
+      return;
+    }
+    res.status(502).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Falha ao testar a conexão com a Twitch.',
+    });
+  }
+});
+
+/** Confere os escopos da conta do bot e a autorização `channel:bot` do streamer. */
+router.get('/twitch/bot/permissions', loadWorkspace, requirePermission('twitch.manage'), async (req, res) => {
+  const { streamer, bot } = await getConnections(req.workspace!.id);
+  const required = TWITCH_BOT_SCOPES;
+  let granted = bot?.scopes ?? [];
+  let checkedLive = false;
+  let detail: string | undefined;
+
+  if (bot) {
+    try {
+      const validation = await validateToken(await ensureFreshToken(bot));
+      granted = validation.scopes;
+      checkedLive = true;
+    } catch (error) {
+      detail = error instanceof Error ? error.message : 'Não foi possível consultar os escopos na Twitch.';
+      const expired =
+        error instanceof TwitchAuthError || (error instanceof Error && /\b401\b/.test(error.message));
+      if (expired) {
+        await setConnectionStatus(req.workspace!.id, 'bot', 'expired').catch(() => undefined);
+      }
+    }
+  }
+
+  const missing = required.filter((scope) => !granted.includes(scope));
+  const channelBot = Boolean(streamer?.scopes.includes('channel:bot'));
+  res.json({
+    connected: Boolean(bot),
+    streamerConnected: Boolean(streamer),
+    required,
+    granted,
+    missing,
+    channelBot,
+    checkedLive,
+    canSend: Boolean(bot && streamer) && missing.length === 0 && channelBot,
+    detail,
+  });
+});
+
+/** Dados reais da live (espectadores, título, jogo, seguidores) pela conta do streamer. */
 router.get('/twitch/live', loadWorkspace, requirePermission('dashboard.view'), async (req, res) => {
   const workspaceId = req.workspace!.id;
-  const connection = await getConnection(workspaceId);
+  const connection = await getConnection(workspaceId, 'streamer');
   if (!connection) {
     res.json({ connected: false, live: false, bot: botStatus(workspaceId) });
     return;

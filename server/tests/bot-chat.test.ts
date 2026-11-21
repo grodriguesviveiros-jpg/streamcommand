@@ -19,6 +19,7 @@ type Fixture = { userId: string; workspaceId: string };
 const createdUsers: string[] = [];
 const originalFetch = globalThis.fetch;
 const BROADCASTER_ID = 'twitch-bot-chat';
+const BOT_ID = 'twitch-bot-account';
 
 async function createWorkspace(label: string): Promise<Fixture> {
   const userId = crypto.randomUUID();
@@ -46,15 +47,28 @@ async function createWorkspace(label: string): Promise<Fixture> {
 }
 
 async function connectChannel(fixture: Fixture): Promise<void> {
-  await saveConnection(fixture.workspaceId, {
+  // Duas conexões independentes: o streamer recebe eventos e o bot fala no chat.
+  await saveConnection(fixture.workspaceId, 'streamer', {
     twitchUserId: BROADCASTER_ID,
     login: 'canal-do-teste',
     displayName: 'Canal do teste',
     avatarUrl: null,
     broadcasterType: 'affiliate',
-    scopes: ['user:read:chat', 'user:write:chat'],
-    accessToken: 'access-token',
-    refreshToken: 'refresh-token',
+    scopes: ['channel:bot', 'moderator:read:followers'],
+    accessToken: 'streamer-access-token',
+    refreshToken: 'streamer-refresh-token',
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    userId: fixture.userId,
+  });
+  await saveConnection(fixture.workspaceId, 'bot', {
+    twitchUserId: BOT_ID,
+    login: 'bot-do-teste',
+    displayName: 'Bot do teste',
+    avatarUrl: null,
+    broadcasterType: '',
+    scopes: ['user:bot', 'user:read:chat', 'user:write:chat'],
+    accessToken: 'bot-access-token',
+    refreshToken: 'bot-refresh-token',
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     userId: fixture.userId,
   });
@@ -142,7 +156,7 @@ test('bot lê a mensagem, grava no histórico e responde o comando no chat', asy
   assert.match(sends[0].url, /\/helix\/chat\/messages$/);
   assert.deepEqual(sends[0].body, {
     broadcaster_id: BROADCASTER_ID,
-    sender_id: BROADCASTER_ID,
+    sender_id: BOT_ID,
     message: '!discord https://discord.gg/stream',
   });
 
@@ -230,8 +244,15 @@ test('só marca o bot como conectado quando a assinatura do chat é aceita', asy
 
     const statuses: { status: string; detail?: string }[] = [];
     const client = new EventSubClient({
-      broadcasterId: BROADCASTER_ID,
-      getToken: async () => 'access-token',
+      subscriptions: [
+        {
+          type: 'channel.chat.message',
+          version: '1',
+          condition: { broadcaster_user_id: BROADCASTER_ID, user_id: BOT_ID },
+          getToken: async () => 'access-token',
+        },
+      ],
+      requiredTypes: ['channel.chat.message'],
       onEvent: () => undefined,
       onStatus: (status, detail) => statuses.push({ status, detail }),
     });
@@ -254,6 +275,6 @@ test('só marca o bot como conectado quando a assinatura do chat é aceita', asy
   const chatSubscription = connected.bodies.find((body) => body.type === 'channel.chat.message');
   assert.deepEqual(chatSubscription?.condition, {
     broadcaster_user_id: BROADCASTER_ID,
-    user_id: BROADCASTER_ID,
+    user_id: BOT_ID,
   });
 });

@@ -74,7 +74,7 @@ after(async () => {
 test('dono conecta a Twitch e o canal é gravado no workspace', async () => {
   const owner = await createUserAndWorkspace('owner');
 
-  await saveConnection(owner.workspaceId, connectionData(owner.userId, 'canal-do-dono'));
+  await saveConnection(owner.workspaceId, 'streamer', connectionData(owner.userId, 'canal-do-dono'));
 
   const connection = await getConnection(owner.workspaceId);
   assert.equal(connection?.login, 'canal-do-dono');
@@ -93,7 +93,7 @@ test('membro com twitch.manage conclui a conexão sem ser dono', async () => {
     ),
   );
 
-  await saveConnection(owner.workspaceId, connectionData(member.userId, 'canal-do-time'));
+  await saveConnection(owner.workspaceId, 'streamer', connectionData(member.userId, 'canal-do-time'));
 
   assert.equal(await channelName(owner), 'canal-do-time');
   assert.equal((await getConnection(owner.workspaceId))?.login, 'canal-do-time');
@@ -104,7 +104,7 @@ test('usuário de outro workspace não grava a conexão nem o canal', async () =
   const outsider = await createUserAndWorkspace('estranho');
 
   await assert.rejects(
-    () => saveConnection(owner.workspaceId, connectionData(outsider.userId, 'invasor')),
+    () => saveConnection(owner.workspaceId, 'streamer', connectionData(outsider.userId, 'invasor')),
     /row-level security|permission denied/i,
   );
 
