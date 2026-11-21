@@ -23,12 +23,14 @@ docker compose -f docker-compose.base44.yml up -d
 - Twitch: **duas conexões independentes por workspace** em `twitch_connections` (`connection_type` = `streamer` | `bot`,
   chave única `(workspace_id, connection_type)`), cada uma com identidade, tokens, escopos e `status` próprios.
   O streamer recebe eventos (`channel.follow`, `channel.subscribe`, `channel.raid`, `stream.online/offline`) e modera;
-  o bot lê o chat (`channel.chat.message`, `user_id` = bot) e envia por `POST /helix/chat/messages` com
-  `broadcaster_id` = streamer e `sender_id` = bot. O streamer precisa autorizar `channel:bot`; o bot usa
-  `user:bot` / `user:read:chat` / `user:write:chat`. Não usa IRC. Sem a conta do bot, o envio fica explicitamente
-  indisponível (nunca cai para o token do streamer). O status "connected" do chat só aparece quando a assinatura
-  `channel.chat.message` é aceita. Renovação é por conta; falha de refresh marca `status = 'expired'`; desconectar
-  revoga os tokens na Twitch e reinicia o motor sem tocar na outra conta.
+  o bot lê o chat (`channel.chat.message`, `user_id` = bot). O envio por `POST /helix/chat/messages` usa a conta
+  escolhida no workspace em `preferences.chat_sender` (`bot`, padrão, ou `streamer`) com `broadcaster_id` = streamer
+  e `sender_id` = conta escolhida; a escolha vale para o painel, comandos e timers e é respeitada (se a conta escolhida
+  não estiver conectada o envio falha com mensagem clara, nunca troca de identidade sozinho). O streamer precisa
+  autorizar `channel:bot` e `user:write:chat`; o bot usa `user:bot` / `user:read:chat` / `user:write:chat`. Não usa
+  IRC. O status "connected" do chat só aparece quando a assinatura `channel.chat.message` é aceita. Renovação é por
+  conta; falha de refresh marca `status = 'expired'`; desconectar revoga os tokens na Twitch e reinicia o motor sem
+  tocar na outra conta.
 - OBS: conexão `ws://` direto do navegador com o protocolo v5 (`src/lib/obs.ts`). Só funciona em http/localhost.
 
 ## Verificação rápida

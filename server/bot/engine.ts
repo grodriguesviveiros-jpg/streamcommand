@@ -2,13 +2,17 @@ import { adminPool, withWorkspace } from '../db';
 import { publish } from '../bus';
 import {
   ensureFreshToken,
+  getChatSenderPreference,
   getConnections,
   getLiveStatus,
+  resolveChatSender,
   sendChatMessage,
   sendWorkspaceChatMessage,
   timeoutUser,
   TwitchAuthError,
+  TwitchNotConnectedError,
   type TwitchConnection,
+  type TwitchConnectionType,
 } from '../twitch';
 import { chatMessageFromEvent, type ChatMessage } from './chat';
 import { EventSubClient, type EventSubSubscription } from './eventsub';
@@ -42,15 +46,17 @@ export type BotStatus = {
   streamer: boolean;
   bot: boolean;
   events: Status;
-  chatSender: 'bot' | null;
+  chatSender: TwitchConnectionType | null;
   detail: string | null;
 };
 
 /**
  * Motor do bot de um workspace. Usa DUAS conexões Twitch independentes:
  * - streamer: identifica o canal, recebe eventos (follow, sub, raid, live) e modera;
- * - bot: entra no chat, lê as mensagens e envia respostas, comandos e timers.
- * Sem a conta do bot conectada, o envio fica indisponível e é reportado assim.
+ * - bot: entra no chat e lê as mensagens.
+ * O envio (respostas, comandos e timers) usa a conta escolhida no workspace
+ * (`preferences.chat_sender`): bot ou streamer. A leitura do chat continua
+ * exigindo a conta do bot.
  */
 export class WorkspaceBot {
   private chatSub: EventSubClient | null = null;
@@ -71,6 +77,8 @@ export class WorkspaceBot {
   private chatStatus: Status = 'offline';
   private eventsStatus: Status = 'offline';
   private detail: string | null = null;
+  /** Conta escolhida pelo workspace para enviar mensagens (bot ou streamer). */
+  private senderPreference: TwitchConnectionType = 'bot';
 
   constructor(public workspaceId: string) {}
 
@@ -79,6 +87,7 @@ export class WorkspaceBot {
     const { streamer, bot } = await getConnections(this.workspaceId);
     this.streamer = streamer;
     this.bot = bot;
+    this.senderPreference = await getChatSenderPreference(this.workspaceId).catch(() => 'bot');
     if (!streamer && !bot) return;
 
     if (streamer) {
@@ -148,9 +157,16 @@ export class WorkspaceBot {
       streamer: Boolean(this.streamer),
       bot: Boolean(this.bot),
       events: this.eventsStatus,
-      chatSender: this.bot && this.streamer ? 'bot' : null,
+      chatSender: this.activeChatSender(),
       detail: this.detail,
     };
+  }
+
+  /** Conta que consegue enviar agora, conforme a escolha do workspace. */
+  private activeChatSender(): TwitchConnectionType | null {
+    if (!this.streamer) return null;
+    if (this.senderPreference === 'streamer') return 'streamer';
+    return this.bot ? 'bot' : null;
   }
 
   private publishStatus(detail?: string): void {
@@ -210,27 +226,20 @@ export class WorkspaceBot {
     return ensureFreshToken(this.bot);
   }
 
-  /** Envia uma mensagem no chat pela conta do bot (user:write:chat). */
+  /** Envia uma mensagem no chat pela conta escolhida (bot ou streamer). */
   async say(text: string): Promise<boolean> {
     try {
       await this.ensureConnections();
-      if (!this.bot) {
-        console.warn('[bot] envio indisponível: conta do bot não conectada', this.workspaceId);
-        return false;
-      }
-      if (!this.streamer) {
-        console.warn('[bot] envio indisponível: conta do streamer não conectada', this.workspaceId);
-        return false;
-      }
-      const messageId = await sendChatMessage(
-        this.bot,
-        await ensureFreshToken(this.bot),
-        this.streamer.twitch_user_id,
-        text,
-      );
+      const sender = await resolveChatSender(this.workspaceId, { streamer: this.streamer, bot: this.bot });
+      this.senderPreference = sender.type;
+      const messageId = await sendChatMessage(sender.connection, sender.token, sender.broadcasterId, text);
       if (messageId) remember(this.selfSentIds, messageId);
       return true;
     } catch (error) {
+      if (error instanceof TwitchNotConnectedError) {
+        console.warn('[bot] envio indisponível:', this.workspaceId, error.message);
+        return false;
+      }
       console.error('[bot] envio', this.workspaceId, error instanceof Error ? error.message : error);
       return false;
     }
@@ -660,13 +669,15 @@ export function invalidateBotCache(workspaceId: string): void {
   bots.get(workspaceId)?.invalidateCache();
 }
 
-/** Envia uma mensagem no chat do workspace pela conta do bot. */
+/** Envia uma mensagem no chat do workspace pela conta escolhida. */
 export async function sendWorkspaceMessage(workspaceId: string, message: string): Promise<void> {
   const bot = bots.get(workspaceId);
   if (bot) {
     const ok = await bot.say(message);
     if (!ok) {
-      throw new Error('Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.');
+      throw new Error(
+        'Envio de mensagens indisponível — confira a conta escolhida em Configurações → Twitch.',
+      );
     }
     return;
   }

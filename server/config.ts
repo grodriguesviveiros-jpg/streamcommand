@@ -39,13 +39,15 @@ export const twitchRedirectUri = () =>
   config.twitch.redirectUri || `${config.appUrl}/api/integrations/twitch/callback`;
 
 /**
- * Escopos da conta do streamer: identidade, eventos do canal, moderação e a
- * autorização `channel:bot` que permite ao aplicativo falar no chat do canal
- * pela conta do bot (Send Chat Message / EventSub de chat).
+ * Escopos da conta do streamer: identidade, eventos do canal, moderação, envio
+ * de mensagens pelo próprio canal (`user:write:chat`, usado quando a conta do
+ * streamer é escolhida como remetente) e a autorização `channel:bot` que
+ * permite ao aplicativo falar no chat do canal pela conta do bot.
  * Referência: https://dev.twitch.tv/docs/authentication/scopes/
  */
 export const TWITCH_STREAMER_SCOPES = [
   'user:read:email',
+  'user:write:chat',
   'channel:bot',
   'moderator:read:followers',
   'moderator:manage:banned_users',

@@ -112,8 +112,8 @@ export default function TwitchAccountCard({ type, account, configured, workspace
               <h2 className="text-sm font-semibold text-white">{isBot ? 'Conta do bot' : 'Conta do streamer'}</h2>
               <p className="mt-1 max-w-sm text-[11px] leading-relaxed text-mist-400">
                 {isBot
-                  ? 'Conta Twitch separada usada para enviar mensagens, responder comandos e postar timers no chat.'
-                  : 'Conta principal do canal: identifica a live, consulta informações e recebe follows, inscrições e raids.'}
+                  ? 'Conta Twitch separada usada para ler o chat e, se escolhida, enviar mensagens, responder comandos e postar timers.'
+                  : 'Conta principal do canal: identifica a live, recebe follows, inscrições e raids e, se escolhida, envia mensagens no chat.'}
               </p>
             </div>
           </div>
@@ -193,7 +193,7 @@ export default function TwitchAccountCard({ type, account, configured, workspace
           <div className="mt-4">
             <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-[11px] leading-relaxed text-mist-400">
               {isBot
-                ? 'Sem esta conta, os recursos de envio pelo bot (mensagens automáticas, comandos e timers) ficam indisponíveis. Você pode usar uma conta Twitch diferente da conta do streamer.'
+                ? 'Sem esta conta, o app não lê o chat e o envio pelo bot fica indisponível. Você pode usar a conta do streamer para enviar ou conectar uma conta diferente.'
                 : 'Conecte a conta principal do canal para liberar dados da live e eventos de follows, inscrições e raids.'}
             </p>
             {configured ? (

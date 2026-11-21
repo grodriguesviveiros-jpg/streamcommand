@@ -14,6 +14,7 @@ import { decryptSecret, encryptSecret, pkcePair, randomToken } from '../crypto';
 import {
   deleteConnection,
   ensureFreshToken,
+  getChatSenderPreference,
   getConnection,
   getConnections,
   getFollowerCount,
@@ -66,6 +67,7 @@ router.get('/twitch', loadWorkspace, requirePermission('dashboard.view'), async 
   res.json({
     configured: isTwitchConfigured(),
     redirectUri: twitchRedirectUri(),
+    chatSender: await getChatSenderPreference(req.workspace!.id),
     bot: botStatus(req.workspace!.id),
     connections: {
       streamer: summarize(connections.streamer, TWITCH_STREAMER_SCOPES),

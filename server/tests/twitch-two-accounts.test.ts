@@ -62,7 +62,9 @@ async function connect(
     displayName: isBot ? 'Bot do canal' : 'Canal do streamer',
     avatarUrl: null,
     broadcasterType: isBot ? '' : 'affiliate',
-    scopes: isBot ? ['user:bot', 'user:read:chat', 'user:write:chat'] : ['channel:bot', 'moderator:read:followers'],
+    scopes: isBot
+      ? ['user:bot', 'user:read:chat', 'user:write:chat']
+      : ['channel:bot', 'user:write:chat', 'moderator:read:followers'],
     accessToken: overrides.accessToken ?? `${type}-access`,
     refreshToken: `${type}-refresh`,
     expiresAt: overrides.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000),
@@ -249,4 +251,41 @@ test('8. conexão expirada é marcada e informa reconexão', async () => {
   const stored = await getConnection(fixture.workspaceId, 'bot');
   assert.equal(stored?.status, 'expired');
   assert.equal(stored?.access_token, 'bot-access', 'o token antigo permanece até reconectar');
+});
+
+test('9. envia pela conta do streamer quando o workspace escolhe essa conta', async () => {
+  const fixture = await createWorkspace('envio-streamer');
+  await connect(fixture, 'streamer');
+  await connect(fixture, 'bot');
+
+  await withContext({ userId: fixture.userId, workspaceId: fixture.workspaceId }, (q) =>
+    q(`update workspaces set preferences = preferences || '{"chat_sender":"streamer"}'::jsonb where id = $1`, [
+      fixture.workspaceId,
+    ]),
+  );
+
+  const calls: { body: Record<string, unknown> }[] = [];
+  stubFetch((url, init) => {
+    calls.push({ body: init?.body ? JSON.parse(String(init.body)) : {} });
+    return new Response(JSON.stringify({ data: [{ message_id: 'msg-streamer', is_sent: true }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  const messageId = await sendWorkspaceChatMessage(fixture.workspaceId, 'mensagem do streamer');
+  assert.equal(messageId, 'msg-streamer');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body, {
+    broadcaster_id: STREAMER_ID,
+    sender_id: STREAMER_ID,
+    message: 'mensagem do streamer',
+  });
+
+  // A escolha é respeitada: sem a conta do streamer o envio falha mesmo com bot conectado.
+  await deleteConnection(fixture.workspaceId, 'streamer');
+  await assert.rejects(
+    () => sendWorkspaceChatMessage(fixture.workspaceId, 'sem streamer'),
+    /conta do streamer/i,
+  );
 });
