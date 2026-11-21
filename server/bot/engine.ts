@@ -108,9 +108,12 @@ export class WorkspaceBot {
       this.isLive = Boolean(live?.live);
     }
 
-    if (streamer && bot) {
+    // Leitura do chat: a conta do bot quando conectada; sem bot, a própria conta
+    // do streamer lê o chat do canal (Chat Client, escopo `user:read:chat`).
+    const chatReader = bot ?? streamer;
+    if (streamer && chatReader) {
       this.chatSub = new EventSubClient({
-        subscriptions: this.chatSubscriptions(streamer, bot),
+        subscriptions: this.chatSubscriptions(streamer, chatReader),
         requiredTypes: ['channel.chat.message'],
         onEvent: (type, event) => {
           this.onTwitchEvent(type, event).catch((error) => console.error('[bot] eventsub', error));
@@ -121,6 +124,9 @@ export class WorkspaceBot {
           this.publishStatus(detail);
         },
       });
+      if (!bot) {
+        this.detail = 'Chat lido pela conta do streamer — nenhuma conta de bot conectada.';
+      }
       this.chatSub.start();
     } else {
       this.chatStatus = 'offline';
@@ -166,7 +172,8 @@ export class WorkspaceBot {
   private activeChatSender(): TwitchConnectionType | null {
     if (!this.streamer) return null;
     if (this.senderPreference === 'streamer') return 'streamer';
-    return this.bot ? 'bot' : null;
+    // Sem conta de bot conectada, a única conta disponível é a do streamer.
+    return this.bot ? 'bot' : 'streamer';
   }
 
   private publishStatus(detail?: string): void {
@@ -194,16 +201,20 @@ export class WorkspaceBot {
     ];
   }
 
-  private chatSubscriptions(streamer: TwitchConnection, bot: TwitchConnection): EventSubSubscription[] {
+  /**
+   * Assinatura do chat: quem lê é `reader` (a conta do bot, ou a do próprio
+   * streamer quando não há bot). O canal é sempre o do streamer.
+   */
+  private chatSubscriptions(streamer: TwitchConnection, reader: TwitchConnection): EventSubSubscription[] {
     return [
       {
         type: 'channel.chat.message',
         version: '1',
         condition: {
           broadcaster_user_id: streamer.twitch_user_id,
-          user_id: bot.twitch_user_id,
+          user_id: reader.twitch_user_id,
         },
-        getToken: () => this.botToken(),
+        getToken: () => ensureFreshToken(reader),
       },
     ];
   }
@@ -219,11 +230,6 @@ export class WorkspaceBot {
   private async streamerToken(): Promise<string> {
     if (!this.streamer) throw new TwitchAuthError('streamer', 'Conta do streamer não conectada');
     return ensureFreshToken(this.streamer);
-  }
-
-  private async botToken(): Promise<string> {
-    if (!this.bot) throw new TwitchAuthError('bot', 'Conta do bot não conectada');
-    return ensureFreshToken(this.bot);
   }
 
   /** Envia uma mensagem no chat pela conta escolhida (bot ou streamer). */

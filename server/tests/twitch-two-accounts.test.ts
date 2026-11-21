@@ -158,12 +158,17 @@ test('4. envia mensagem pela conta do bot no canal do streamer', async () => {
     message: 'mensagem do bot',
   });
 
-  // Sem bot conectado, o envio falha de forma explícita.
+  // Sem conta de bot, a conta do streamer é a única disponível e envia por ela.
   await deleteConnection(fixture.workspaceId, 'bot');
-  await assert.rejects(
-    () => sendWorkspaceChatMessage(fixture.workspaceId, 'sem bot'),
-    /bot não conectada/i,
-  );
+  calls.length = 0;
+  const fallbackId = await sendWorkspaceChatMessage(fixture.workspaceId, 'sem bot');
+  assert.equal(fallbackId, 'msg-bot');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body, {
+    broadcaster_id: STREAMER_ID,
+    sender_id: STREAMER_ID,
+    message: 'sem bot',
+  });
 });
 
 test('5. desconectar o bot mantém o streamer conectado', async () => {

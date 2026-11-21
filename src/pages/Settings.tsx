@@ -229,8 +229,9 @@ export default function Settings() {
               O STREAM COMMAND trabalha com <strong className="text-white">duas contas Twitch independentes</strong> por
               workspace. A conta do <strong className="text-white">streamer</strong> identifica o canal e recebe os
               eventos (follows, inscrições, raids e live). A conta do <strong className="text-white">bot</strong> é uma
-              segunda conta, separada, usada para ler o chat. Você escolhe abaixo qual das duas envia as mensagens,
-              respostas de comandos e timers. Cada conexão tem seus próprios tokens, escopos e estado.
+              segunda conta, separada, usada para ler o chat (sem ela, a leitura usa a própria conta do streamer). Você
+              escolhe abaixo qual das duas envia as mensagens, respostas de comandos e timers. Cada conexão tem seus
+              próprios tokens, escopos e estado.
             </p>
             {twitch.data?.sameAccount ? (
               <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
@@ -239,9 +240,9 @@ export default function Settings() {
               </p>
             ) : null}
             {twitch.data && !twitch.data.connections?.bot ? (
-              <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-                Conta do bot não conectada: a leitura do chat fica indisponível e o envio pelo bot também. Você pode
-                usar a conta do streamer para enviar ou conectar uma conta de bot.
+              <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                Conta do bot não conectada: o chat é lido e enviado pela conta do streamer (ela precisa ter autorizado
+                user:read:chat). Conecte uma conta de bot para responder com outra identidade.
               </p>
             ) : null}
           </Card>

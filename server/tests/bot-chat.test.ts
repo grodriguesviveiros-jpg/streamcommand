@@ -2,7 +2,7 @@ import test, { after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { closePool, withContext } from '../db';
-import { saveConnection } from '../twitch';
+import { deleteConnection, getConnections, saveConnection } from '../twitch';
 import { WorkspaceBot } from '../bot/engine';
 import { chatMessageFromEvent } from '../bot/chat';
 import { EventSubClient } from '../bot/eventsub';
@@ -278,3 +278,98 @@ test('só marca o bot como conectado quando a assinatura do chat é aceita', asy
     user_id: BOT_ID,
   });
 });
+
+test('sem conta de bot, o chat é lido pela própria conta do streamer', async () => {
+  const fixture = await createWorkspace('bot-chat-streamer-only');
+  await connectChannel(fixture);
+  await deleteConnection(fixture.workspaceId, 'bot');
+  const streamerToken = (await getConnections(fixture.workspaceId)).streamer?.access_token;
+
+  const subscriptions: { body: Record<string, any>; authorization: string }[] = [];
+  stubFetch((url, init) => {
+    if (url.includes('/eventsub/subscriptions')) {
+      subscriptions.push({
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, any>) : {},
+        authorization: new Headers(init?.headers).get('authorization') ?? '',
+      });
+      return new Response('{}', { status: 202 });
+    }
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+
+  const sockets: FakeWebSocket[] = [];
+  const originalWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = class extends FakeWebSocket {
+    constructor(url: string) {
+      super(url);
+      sockets.push(this);
+    }
+  } as unknown as typeof WebSocket;
+
+  try {
+    const bot = new WorkspaceBot(fixture.workspaceId);
+    await bot.start();
+    // Dois clientes EventSub: eventos do canal e chat.
+    assert.equal(sockets.length, 2);
+    for (const socket of sockets) {
+      socket.emit(
+        'message',
+        JSON.stringify({
+          metadata: { message_type: 'session_welcome' },
+          payload: { session: { id: 'session-1' } },
+        }),
+      );
+    }
+
+    const chatSubscription = await waitForSubscription(subscriptions, 'channel.chat.message');
+    assert.deepEqual(chatSubscription.body.condition, {
+      broadcaster_user_id: BROADCASTER_ID,
+      user_id: BROADCASTER_ID,
+    });
+    assert.equal(chatSubscription.authorization, `Bearer ${streamerToken}`);
+
+    const status = bot.getStatus();
+    assert.equal(status.streamer, true);
+    assert.equal(status.bot, false);
+    assert.equal(status.chatSender, 'streamer');
+    bot.stop();
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+/** WebSocket falso: só entrega mensagens do EventSub para o cliente. */
+class FakeWebSocket {
+  private listeners = new Map<string, ((event: { data?: string }) => void)[]>();
+
+  constructor(public url: string) {}
+
+  addEventListener(type: string, listener: (event: { data?: string }) => void): void {
+    const list = this.listeners.get(type) ?? [];
+    list.push(listener);
+    this.listeners.set(type, list);
+  }
+
+  emit(type: string, data?: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener({ data });
+  }
+
+  close(): void {
+    this.emit('close');
+  }
+}
+
+async function waitForSubscription(
+  subscriptions: { body: Record<string, any>; authorization: string }[],
+  type: string,
+): Promise<{ body: Record<string, any>; authorization: string }> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const found = subscriptions.find((item) => item.body.type === type);
+    if (found) return found;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`assinatura ${type} não foi criada`);
+}

@@ -41,12 +41,17 @@ export const twitchRedirectUri = () =>
 /**
  * Escopos da conta do streamer: identidade, eventos do canal, moderação, envio
  * de mensagens pelo próprio canal (`user:write:chat`, usado quando a conta do
- * streamer é escolhida como remetente) e a autorização `channel:bot` que
- * permite ao aplicativo falar no chat do canal pela conta do bot.
+ * streamer é escolhida como remetente), leitura do próprio chat
+ * (`user:read:chat`, usada quando não há conta de bot conectada) e a
+ * autorização `channel:bot` que permite ao aplicativo falar no chat do canal
+ * pela conta do bot.
  * Referência: https://dev.twitch.tv/docs/authentication/scopes/
  */
 export const TWITCH_STREAMER_SCOPES = [
   'user:read:email',
+  // Chat Client: permite que a própria conta do canal leia o chat quando
+  // nenhuma conta de bot estiver conectada.
+  'user:read:chat',
   'user:write:chat',
   'channel:bot',
   'moderator:read:followers',

@@ -23,15 +23,20 @@ docker compose -f docker-compose.base44.yml up -d
 - Twitch: **duas conexões independentes por workspace** em `twitch_connections` (`connection_type` = `streamer` | `bot`,
   chave única `(workspace_id, connection_type)`), cada uma com identidade, tokens, escopos e `status` próprios.
   O streamer recebe eventos (`channel.follow`, `channel.subscribe`, `channel.raid`, `stream.online/offline`) e modera;
-  o bot lê o chat (`channel.chat.message`, `user_id` = bot). O envio por `POST /helix/chat/messages` usa a conta
-  escolhida no workspace em `preferences.chat_sender` (`bot`, padrão, ou `streamer`) com `broadcaster_id` = streamer
-  e `sender_id` = conta escolhida; a escolha vale para o painel, comandos e timers e é respeitada (se a conta escolhida
-  não estiver conectada o envio falha com mensagem clara, nunca troca de identidade sozinho). O streamer precisa
-  autorizar `channel:bot` e `user:write:chat`; o bot usa `user:bot` / `user:read:chat` / `user:write:chat`. Não usa
-  IRC. O status "connected" do chat só aparece quando a assinatura `channel.chat.message` é aceita. Renovação é por
-  conta; falha de refresh marca `status = 'expired'`; desconectar revoga os tokens na Twitch e reinicia o motor sem
-  tocar na outra conta.
-- OBS: conexão `ws://` direto do navegador com o protocolo v5 (`src/lib/obs.ts`). Só funciona em http/localhost.
+  o chat é lido pela conta do bot (`channel.chat.message`, `user_id` = bot) ou, **sem bot conectado, pela própria conta
+  do streamer** (`user_id` = streamer, escopo `user:read:chat` — modo Chat Client). O envio por
+  `POST /helix/chat/messages` usa a conta escolhida no workspace em `preferences.chat_sender` (`bot`, padrão, ou
+  `streamer`) com `broadcaster_id` = streamer e `sender_id` = conta escolhida; a escolha vale para o painel, comandos e
+  timers. Única exceção: quando a conta escolhida nunca foi conectada e a outra existe, a conta do streamer envia (o
+  `sender` devolvido diz qual foi usada) — uma conta escolhida que existe mas expirou continua sendo um erro claro, sem
+  troca silenciosa. O streamer precisa autorizar `channel:bot`, `user:read:chat` e `user:write:chat`; o bot usa
+  `user:bot` / `user:read:chat` / `user:write:chat`. Não usa IRC. O status "connected" do chat só aparece quando a
+  assinatura `channel.chat.message` é aceita; a página do chat mostra um diagnóstico (`ChatHealthBanner`) com o que falta.
+  Renovação é por conta; falha de refresh marca `status = 'expired'`; desconectar revoga os tokens na Twitch e reinicia
+  o motor sem tocar na outra conta.
+- OBS: protocolo v5 em `src/lib/obs.ts`. No navegador a conexão é `ws://` direto, o que **só funciona em
+  http/localhost** (páginas HTTPS bloqueiam conteúdo misto). No aplicativo desktop (Tauri) a conexão é feita pelo
+  processo nativo (`src-tauri/src/obs.rs`) e funciona também em HTTPS. Ver `docs/DESKTOP.md`.
 
 ## Verificação rápida
 ```bash
@@ -48,6 +53,18 @@ docker compose -f docker-compose.base44.yml exec -T web npx vite build
   do banco (o RLS forçado continua valendo; avisa no log se esse usuário ignorar RLS). O Compose continua
   definindo `DATABASE_URL` explicitamente, então nada muda em desenvolvimento.
 - Guia do usuário: `docs/RENDER.md`.
+
+## Desktop (Tauri)
+- `src-tauri/` é o shell desktop: a janela carrega `STREAM_COMMAND_APP_URL` (embutida no build por
+  `option_env!`, sobrescrevível em runtime) e o OBS é acessado pelo processo nativo, então `ws://` funciona em HTTPS.
+- Nada do site muda no desktop: mesma origem, mesmo cookie de sessão, mesmo SSE. O frontend só detecta o Tauri em
+  `src/lib/obs.ts` (`window.__TAURI__.core.invoke`) e usa `obs_connect` / `obs_request` / `obs_disconnect`.
+- `src-tauri/capabilities/default.json` libera os comandos para a janela `main` e para `remote.urls`
+  (`https://*`, `http://localhost:*`). Restrinja ao domínio real ao publicar.
+- `tauri.conf.json` tem `devUrl` (localhost:3000) e `beforeBuildCommand` (`npm run build`). Guia: `docs/DESKTOP.md`;
+  instaladores pelo workflow `.github/workflows/desktop.yml`.
+- O build desktop **não roda no sandbox** (precisa de Rust + SDKs do sistema): valide o app web normalmente e, para o
+  shell, `cargo check` com as dependências de sistema instaladas.
 
 ## Preview (Base44)
 - `vite.config.ts` libera o host do preview quando `BASE44_PREVIEW_MODE === '1'` (usa

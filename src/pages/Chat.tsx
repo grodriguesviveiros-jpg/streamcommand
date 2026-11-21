@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Ban, Search, Send, WifiOff } from 'lucide-react';
 import { useApp } from '../state/AppContext';
 import { get, post } from '../lib/api';
-import type { ChatMessage } from '../lib/types';
+import { useApi } from '../lib/hooks';
+import type { ChatMessage, TwitchConnectionInfo } from '../lib/types';
+import ChatHealthBanner from '../components/ChatHealthBanner';
 import { Badge, Button, Card, EmptyState, Field, Input, Modal, PageHeader, Select, Spinner } from '../components/ui';
 import { formatDateTime } from '../lib/format';
 
@@ -20,6 +22,7 @@ type Filter = 'all' | 'subs' | 'mods';
 
 export default function Chat() {
   const { workspace, can, chat, realtimeConnected } = useApp();
+  const twitch = useApi<TwitchConnectionInfo>(workspace ? '/integrations/twitch' : null);
   const [history, setHistory] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -125,6 +128,8 @@ export default function Chat() {
           {error}
         </div>
       ) : null}
+
+      <ChatHealthBanner info={twitch.data} workspaceId={workspace?.id} />
 
       <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
         <Card className="flex h-[calc(100vh-230px)] min-h-[420px] flex-col overflow-hidden">

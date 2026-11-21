@@ -193,8 +193,8 @@ export default function TwitchAccountCard({ type, account, configured, workspace
           <div className="mt-4">
             <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-[11px] leading-relaxed text-mist-400">
               {isBot
-                ? 'Sem esta conta, o app não lê o chat e o envio pelo bot fica indisponível. Você pode usar a conta do streamer para enviar ou conectar uma conta diferente.'
-                : 'Conecte a conta principal do canal para liberar dados da live e eventos de follows, inscrições e raids.'}
+                ? 'Sem esta conta, o chat é lido e enviado pela conta do streamer (é preciso autorizar user:read:chat nela). Conecte uma conta diferente para responder como bot.'
+                : 'Conecte a conta principal do canal para liberar dados da live, eventos de follows, inscrições e raids e a leitura do chat.'}
             </p>
             {configured ? (
               <a href={connectUrl} className="btn-primary mt-3">

@@ -140,14 +140,20 @@ export default function ChatSenderCard({ preference, streamer, bot, onChanged }:
       </div>
 
       {!selected ? (
-        <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-          A conta escolhida não está conectada — o envio fica indisponível até conectar essa conta
-          {other ? ' ou trocar a escolha para a outra conta.' : '.'}
-        </p>
+        preference === 'bot' && streamer ? (
+          <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+            A conta do bot não está conectada — o envio sai pela conta do streamer até ela ser conectada.
+          </p>
+        ) : (
+          <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
+            A conta escolhida não está conectada — o envio fica indisponível até conectar essa conta
+            {other ? ' ou trocar a escolha para a outra conta.' : '.'}
+          </p>
+        )
       ) : preference === 'streamer' && !bot ? (
         <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-          O envio pela conta do streamer está ativo, mas sem a conta do bot o app não lê o chat — comandos,
-          automações e respostas automáticas não são disparados.
+          O envio pela conta do streamer está ativo. Sem a conta do bot, a leitura do chat também usa a conta do
+          streamer — confira se ela autorizou user:read:chat.
         </p>
       ) : null}
 

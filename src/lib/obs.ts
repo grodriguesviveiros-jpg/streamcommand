@@ -1,10 +1,22 @@
 /**
  * Cliente do OBS WebSocket (protocolo v5).
- * A conexão é feita direto do aplicativo para o OBS local (ws://127.0.0.1:4455),
- * sem intermediários e sem expor a senha na rede.
+ * No navegador a conexão é feita direto para o OBS local (ws://127.0.0.1:4455),
+ * o que só funciona em http/localhost — páginas HTTPS bloqueiam ws://.
+ * No aplicativo desktop (Tauri) a conexão é feita pelo processo nativo, então
+ * funciona também quando o site é servido por HTTPS.
  */
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void };
+type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+
+/** Ponte do Tauri, presente só no aplicativo desktop. */
+function desktopInvoke(): Invoke | null {
+  const bridge = (window as unknown as { __TAURI__?: { core?: { invoke?: Invoke } } }).__TAURI__;
+  return bridge?.core?.invoke ?? null;
+}
+
+/** Verdadeiro dentro do aplicativo desktop (o OBS é acessado pelo processo nativo). */
+export const isDesktopApp = (): boolean => desktopInvoke() !== null;
 
 async function sha256Base64(value: string): Promise<string> {
   const data = new TextEncoder().encode(value);
@@ -19,12 +31,28 @@ export class ObsClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, Pending>();
   private counter = 0;
+  /** Ponte nativa do aplicativo desktop (null no navegador). */
+  private native: Invoke | null = null;
+  private nativeOpen = false;
 
   get connected(): boolean {
+    if (this.native) return this.nativeOpen;
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
   async connect(host: string, port: number, password: string): Promise<void> {
+    const invoke = desktopInvoke();
+    if (invoke) {
+      await invoke('obs_connect', { host, port, password });
+      this.native = invoke;
+      this.nativeOpen = true;
+      return;
+    }
+    if (window.location.protocol === 'https:') {
+      throw new Error(
+        'O navegador bloqueia conexões ws:// em páginas HTTPS. Use o aplicativo desktop do STREAM COMMAND ou acesse o site por http://localhost:3000.',
+      );
+    }
     this.disconnect();
     const url = `ws://${host}:${port}`;
     const ws = new WebSocket(url);
@@ -89,9 +117,18 @@ export class ObsClient {
     this.pending.clear();
     this.ws?.close();
     this.ws = null;
+    if (this.native) {
+      void this.native('obs_disconnect').catch(() => undefined);
+      this.native = null;
+      this.nativeOpen = false;
+    }
   }
 
   request<T = Record<string, unknown>>(requestType: string, requestData?: Record<string, unknown>): Promise<T> {
+    if (this.native) {
+      if (!this.nativeOpen) return Promise.reject(new Error('OBS desconectado'));
+      return this.native('obs_request', { requestType, requestData }) as Promise<T>;
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error('OBS desconectado'));
     }

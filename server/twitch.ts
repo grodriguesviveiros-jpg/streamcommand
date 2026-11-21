@@ -401,8 +401,9 @@ export type ChatSender = {
 
 /**
  * Escolhe a conta que envia mensagens no chat. A preferência do workspace
- * (`preferences.chat_sender`) é respeitada: se a conta escolhida não estiver
- * conectada, a operação falha com uma mensagem clara em vez de usar a outra.
+ * (`preferences.chat_sender`) é respeitada. A única exceção é quando a conta
+ * escolhida nunca foi conectada e a outra existe (workspace com uma conta só):
+ * nesse caso a conta do streamer envia e o tipo devolvido diz qual foi usada.
  */
 export async function resolveChatSender(
   workspaceId: string,
@@ -412,7 +413,10 @@ export async function resolveChatSender(
   if (!streamer) {
     throw new TwitchNotConnectedError('Conecte a conta do streamer para identificar o canal.');
   }
-  const type = await getChatSenderPreference(workspaceId);
+  const preferred = await getChatSenderPreference(workspaceId);
+  // A preferência só manda quando a conta escolhida existe: sem nenhuma conta
+  // de bot conectada, a conta do streamer é a única disponível e envia.
+  const type: TwitchConnectionType = preferred === 'bot' && !bot ? 'streamer' : preferred;
   const connection = type === 'streamer' ? streamer : bot;
   if (!connection) {
     throw new TwitchNotConnectedError(

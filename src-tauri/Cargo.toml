@@ -1,0 +1,20 @@
+[package]
+name = "stream-command-desktop"
+version = "1.0.0"
+description = "STREAM COMMAND — aplicativo desktop (controle local do OBS)"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "time", "sync", "rt-multi-thread", "macros"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+sha2 = "0.10"
+base64 = "0.22"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

@@ -19,7 +19,7 @@ Abra **http://localhost:3000**. Guia completo, passo a passo (Discord, Twitch, O
 | Comandos, timers, automações, sorteios, enquetes, fila, soundboard, botões | Funcionando |
 | Login Discord | Implementado — depende de `DISCORD_CLIENT_ID`/`SECRET` |
 | Chat/eventos/moderação Twitch | Implementado — depende de `TWITCH_CLIENT_ID`/`SECRET` e das contas do streamer e do bot conectadas |
-| OBS WebSocket (v5) | Implementado — depende do OBS local com WebSocket ativo |
+| OBS WebSocket (v5) | Implementado — depende do OBS local com WebSocket ativo; em HTTPS use o app desktop ([docs/DESKTOP.md](docs/DESKTOP.md)) |
 
 Repositório no GitHub: https://github.com/grodriguesviveiros-jpg/streamcommand
 
