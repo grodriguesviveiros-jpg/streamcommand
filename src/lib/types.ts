@@ -62,19 +62,58 @@ export type LiveStatus = {
   bot?: { chat: string; live: boolean; connected: boolean };
 };
 
+export type TwitchAccountType = 'streamer' | 'bot';
+
+export type TwitchAccount = {
+  id: string;
+  twitchUserId: string;
+  login: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  broadcasterType: string | null;
+  scopes: string[];
+  status: 'active' | 'expired' | 'revoked' | 'error';
+  connectedAt: string;
+  expiresAt: string;
+  missingScopes: string[];
+};
+
+export type TwitchBotStatus = {
+  chat: string;
+  live: boolean;
+  connected: boolean;
+  streamer?: boolean;
+  bot?: boolean;
+  events?: string;
+  chatSender?: 'bot' | null;
+  detail?: string | null;
+};
+
 export type TwitchConnectionInfo = {
   configured: boolean;
   redirectUri: string;
-  bot: { chat: string; live: boolean; connected: boolean };
-  connection: {
-    login: string;
-    displayName: string | null;
-    avatarUrl: string | null;
-    broadcasterType: string | null;
-    scopes: string[];
-    connectedAt: string;
-    expiresAt: string;
-  } | null;
+  bot: TwitchBotStatus;
+  connections: {
+    streamer: TwitchAccount | null;
+    bot: TwitchAccount | null;
+  };
+  requiredScopes: {
+    streamer: string[];
+    bot: string[];
+  };
+  sameAccount?: boolean;
+};
+
+export type TwitchBotPermissions = {
+  connected: boolean;
+  streamerConnected: boolean;
+  required: string[];
+  granted: string[];
+  missing: string[];
+  channelBot: boolean;
+  checkedLive: boolean;
+  canSend: boolean;
+  detail?: string;
 };
 
 export type ChatMessage = {

@@ -2,14 +2,16 @@ import { adminPool, withWorkspace } from '../db';
 import { publish } from '../bus';
 import {
   ensureFreshToken,
-  getConnection,
+  getConnections,
   getLiveStatus,
   sendChatMessage,
+  sendWorkspaceChatMessage,
   timeoutUser,
+  TwitchAuthError,
   type TwitchConnection,
 } from '../twitch';
 import { chatMessageFromEvent, type ChatMessage } from './chat';
-import { EventSubClient } from './eventsub';
+import { EventSubClient, type EventSubSubscription } from './eventsub';
 
 type CommandRow = {
   id: string;
@@ -31,15 +33,30 @@ type AutomationRow = {
   run_count: number;
 };
 
+type Status = 'connected' | 'offline' | 'error';
+
+export type BotStatus = {
+  chat: Status;
+  live: boolean;
+  connected: boolean;
+  streamer: boolean;
+  bot: boolean;
+  events: Status;
+  chatSender: 'bot' | null;
+  detail: string | null;
+};
+
 /**
- * Motor do bot de um workspace: lê o chat e recebe os eventos da Twitch pelo
- * EventSub e responde pela API de chat (Helix). Executa comandos, timers,
- * automações, sorteios, enquetes e fila.
+ * Motor do bot de um workspace. Usa DUAS conexões Twitch independentes:
+ * - streamer: identifica o canal, recebe eventos (follow, sub, raid, live) e modera;
+ * - bot: entra no chat, lê as mensagens e envia respostas, comandos e timers.
+ * Sem a conta do bot conectada, o envio fica indisponível e é reportado assim.
  */
 export class WorkspaceBot {
-  private eventsub: EventSubClient | null = null;
-  private conn: TwitchConnection | null = null;
-  private token = '';
+  private chatSub: EventSubClient | null = null;
+  private eventsSub: EventSubClient | null = null;
+  private streamer: TwitchConnection | null = null;
+  private bot: TwitchConnection | null = null;
   private started = false;
   private isLive = false;
   private tick: NodeJS.Timeout | null = null;
@@ -51,35 +68,58 @@ export class WorkspaceBot {
   private cooldowns = new Map<string, number>();
   private recentMessageIds = new Set<string>();
   private selfSentIds = new Set<string>();
-  private status: 'connected' | 'offline' | 'error' = 'offline';
+  private chatStatus: Status = 'offline';
+  private eventsStatus: Status = 'offline';
+  private detail: string | null = null;
 
   constructor(public workspaceId: string) {}
 
   async start(): Promise<void> {
     if (this.started) return;
-    const conn = await getConnection(this.workspaceId);
-    if (!conn) return;
-    this.conn = conn;
-    this.token = await ensureFreshToken(conn);
+    const { streamer, bot } = await getConnections(this.workspaceId);
+    this.streamer = streamer;
+    this.bot = bot;
+    if (!streamer && !bot) return;
 
-    this.eventsub = new EventSubClient({
-      broadcasterId: conn.twitch_user_id,
-      getToken: () => this.freshToken(),
-      onEvent: (type, event) => {
-        this.onTwitchEvent(type, event).catch((error) => console.error('[bot] eventsub', error));
-      },
-      onStatus: (status, detail) => {
-        // "connected" só é publicado quando a assinatura do chat é aceita.
-        this.status = status === 'connected' ? 'connected' : status === 'error' ? 'error' : 'offline';
-        const at = new Date().toISOString();
-        publish(this.workspaceId, { type: 'bot.status', data: { chat: this.status, detail, at } });
-        publish(this.workspaceId, { type: 'bot.eventsub', data: { status, detail, at } });
-      },
-    });
-    this.eventsub.start();
+    if (streamer) {
+      this.eventsSub = new EventSubClient({
+        subscriptions: this.channelSubscriptions(streamer),
+        requiredTypes: ['stream.online', 'channel.follow', 'channel.subscribe', 'channel.raid'],
+        onEvent: (type, event) => {
+          this.onTwitchEvent(type, event).catch((error) => console.error('[bot] eventsub', error));
+        },
+        onStatus: (status, detail) => {
+          this.eventsStatus = status === 'connected' ? 'connected' : status === 'error' ? 'error' : 'offline';
+          this.publishStatus(detail);
+        },
+      });
+      this.eventsSub.start();
 
-    const live = await getLiveStatus(conn, this.token).catch(() => null);
-    this.isLive = Boolean(live?.live);
+      const live = await getLiveStatus(streamer, await ensureFreshToken(streamer)).catch(() => null);
+      this.isLive = Boolean(live?.live);
+    }
+
+    if (streamer && bot) {
+      this.chatSub = new EventSubClient({
+        subscriptions: this.chatSubscriptions(streamer, bot),
+        requiredTypes: ['channel.chat.message'],
+        onEvent: (type, event) => {
+          this.onTwitchEvent(type, event).catch((error) => console.error('[bot] eventsub', error));
+        },
+        onStatus: (status, detail) => {
+          // "connected" só é publicado quando a assinatura do chat é aceita.
+          this.chatStatus = status === 'connected' ? 'connected' : status === 'error' ? 'error' : 'offline';
+          this.publishStatus(detail);
+        },
+      });
+      this.chatSub.start();
+    } else {
+      this.chatStatus = 'offline';
+      this.detail = !streamer
+        ? 'Conecte a conta do streamer para identificar o canal.'
+        : 'Conta do bot não conectada — leitura e envio de chat indisponíveis.';
+      this.publishStatus(this.detail);
+    }
 
     this.tick = setInterval(() => {
       this.runTimers().catch(() => undefined);
@@ -90,29 +130,104 @@ export class WorkspaceBot {
   }
 
   stop(): void {
-    this.eventsub?.stop();
+    this.chatSub?.stop();
+    this.eventsSub?.stop();
     if (this.tick) clearInterval(this.tick);
-    this.eventsub = null;
+    this.chatSub = null;
+    this.eventsSub = null;
     this.started = false;
-    this.status = 'offline';
+    this.chatStatus = 'offline';
+    this.eventsStatus = 'offline';
   }
 
-  getStatus() {
-    return { chat: this.status, live: this.isLive, connected: Boolean(this.conn) };
+  getStatus(): BotStatus {
+    return {
+      chat: this.chatStatus,
+      live: this.isLive,
+      connected: Boolean(this.streamer),
+      streamer: Boolean(this.streamer),
+      bot: Boolean(this.bot),
+      events: this.eventsStatus,
+      chatSender: this.bot && this.streamer ? 'bot' : null,
+      detail: this.detail,
+    };
   }
 
-  private async freshToken(): Promise<string> {
-    if (!this.conn) throw new Error('Twitch não conectado');
-    return ensureFreshToken(this.conn);
+  private publishStatus(detail?: string): void {
+    if (detail !== undefined) this.detail = detail ?? null;
+    const at = new Date().toISOString();
+    const status = this.getStatus();
+    publish(this.workspaceId, { type: 'bot.status', data: { ...status, at } });
+    publish(this.workspaceId, { type: 'bot.eventsub', data: { status, detail: this.detail, at } });
   }
 
-  /** Envia uma mensagem no chat pela API da Twitch (escopo user:write:chat). */
+  private channelSubscriptions(streamer: TwitchConnection): EventSubSubscription[] {
+    const broadcaster = streamer.twitch_user_id;
+    const getToken = () => this.streamerToken();
+    return [
+      {
+        type: 'channel.follow',
+        version: '2',
+        condition: { broadcaster_user_id: broadcaster, moderator_user_id: broadcaster },
+        getToken,
+      },
+      { type: 'channel.subscribe', version: '1', condition: { broadcaster_user_id: broadcaster }, getToken },
+      { type: 'channel.raid', version: '1', condition: { to_broadcaster_user_id: broadcaster }, getToken },
+      { type: 'stream.online', version: '1', condition: { broadcaster_user_id: broadcaster }, getToken },
+      { type: 'stream.offline', version: '1', condition: { broadcaster_user_id: broadcaster }, getToken },
+    ];
+  }
+
+  private chatSubscriptions(streamer: TwitchConnection, bot: TwitchConnection): EventSubSubscription[] {
+    return [
+      {
+        type: 'channel.chat.message',
+        version: '1',
+        condition: {
+          broadcaster_user_id: streamer.twitch_user_id,
+          user_id: bot.twitch_user_id,
+        },
+        getToken: () => this.botToken(),
+      },
+    ];
+  }
+
+  private async ensureConnections(): Promise<void> {
+    if (!this.streamer || !this.bot) {
+      const connections = await getConnections(this.workspaceId);
+      this.streamer = connections.streamer;
+      this.bot = connections.bot;
+    }
+  }
+
+  private async streamerToken(): Promise<string> {
+    if (!this.streamer) throw new TwitchAuthError('streamer', 'Conta do streamer não conectada');
+    return ensureFreshToken(this.streamer);
+  }
+
+  private async botToken(): Promise<string> {
+    if (!this.bot) throw new TwitchAuthError('bot', 'Conta do bot não conectada');
+    return ensureFreshToken(this.bot);
+  }
+
+  /** Envia uma mensagem no chat pela conta do bot (user:write:chat). */
   async say(text: string): Promise<boolean> {
     try {
-      const conn = this.conn ?? (await getConnection(this.workspaceId));
-      if (!conn) return false;
-      this.conn = conn;
-      const messageId = await sendChatMessage(conn, await ensureFreshToken(conn), text);
+      await this.ensureConnections();
+      if (!this.bot) {
+        console.warn('[bot] envio indisponível: conta do bot não conectada', this.workspaceId);
+        return false;
+      }
+      if (!this.streamer) {
+        console.warn('[bot] envio indisponível: conta do streamer não conectada', this.workspaceId);
+        return false;
+      }
+      const messageId = await sendChatMessage(
+        this.bot,
+        await ensureFreshToken(this.bot),
+        this.streamer.twitch_user_id,
+        text,
+      );
       if (messageId) remember(this.selfSentIds, messageId);
       return true;
     } catch (error) {
@@ -295,8 +410,8 @@ export class WorkspaceBot {
 
   private async onTwitchEvent(type: string, event: Record<string, unknown>): Promise<void> {
     if (type === 'channel.chat.message') {
-      if (!this.conn) return;
-      const message = chatMessageFromEvent(event, this.conn.twitch_user_id);
+      if (!this.streamer) return;
+      const message = chatMessageFromEvent(event, this.streamer.twitch_user_id);
       if (message) await this.handleChatMessage(message);
       return;
     }
@@ -389,7 +504,7 @@ export class WorkspaceBot {
     actionConfig: Record<string, unknown>,
     context: { username?: string; userId?: string; message?: string; viewers?: number },
   ): Promise<{ ok: boolean; message: string }> {
-    if (!this.conn) return { ok: false, message: 'Twitch desconectado' };
+    await this.ensureConnections();
     try {
       switch (actionType) {
         case 'chat_message': {
@@ -399,14 +514,15 @@ export class WorkspaceBot {
             .replace(/\{viewers\}/g, String(context.viewers ?? ''));
           const sent = await this.say(rendered);
           return sent
-            ? { ok: true, message: `Mensagem enviada: ${rendered.slice(0, 80)}` }
-            : { ok: false, message: 'Falha ao enviar mensagem no chat' };
+            ? { ok: true, message: `Mensagem enviada pelo bot: ${rendered.slice(0, 80)}` }
+            : { ok: false, message: 'Envio pelo bot indisponível (conta do bot não conectada)' };
         }
         case 'timeout_user': {
           if (!context.userId) return { ok: false, message: 'Sem usuário para moderar' };
-          const token = await this.freshToken();
+          if (!this.streamer) return { ok: false, message: 'Conta do streamer não conectada' };
+          const token = await this.streamerToken();
           await timeoutUser(
-            this.conn,
+            this.streamer,
             token,
             context.userId,
             Number(actionConfig.duration ?? 600),
@@ -438,7 +554,7 @@ export class WorkspaceBot {
           const sent = await this.say(command.response);
           return sent
             ? { ok: true, message: `Comando !${name} executado` }
-            : { ok: false, message: 'Falha ao enviar mensagem no chat' };
+            : { ok: false, message: 'Envio pelo bot indisponível (conta do bot não conectada)' };
         }
         default:
           return { ok: false, message: `Ação "${actionType}" só roda no aplicativo (OBS/som)` };
@@ -467,8 +583,8 @@ export class WorkspaceBot {
   }
 
   private async pollLive(): Promise<void> {
-    if (!this.conn) return;
-    const status = await getLiveStatus(this.conn, await this.freshToken()).catch(() => null);
+    if (!this.streamer) return;
+    const status = await getLiveStatus(this.streamer, await this.streamerToken()).catch(() => null);
     if (!status) return;
     this.isLive = status.live;
     if (status.live) {
@@ -498,7 +614,9 @@ const bots = new Map<string, WorkspaceBot>();
 
 export async function startBotEngine(): Promise<void> {
   try {
-    const { rows } = await adminPool.query<{ workspace_id: string }>('select workspace_id from twitch_connections');
+    const { rows } = await adminPool.query<{ workspace_id: string }>(
+      'select distinct workspace_id from twitch_connections',
+    );
     for (const row of rows) {
       const bot = new WorkspaceBot(row.workspace_id);
       bots.set(row.workspace_id, bot);
@@ -523,22 +641,34 @@ export function stopBot(workspaceId: string): void {
   bots.delete(workspaceId);
 }
 
-export function botStatus(workspaceId: string) {
-  return bots.get(workspaceId)?.getStatus() ?? { chat: 'offline', live: false, connected: false };
+export function botStatus(workspaceId: string): BotStatus {
+  return (
+    bots.get(workspaceId)?.getStatus() ?? {
+      chat: 'offline',
+      live: false,
+      connected: false,
+      streamer: false,
+      bot: false,
+      events: 'offline',
+      chatSender: null,
+      detail: null,
+    }
+  );
 }
 
 export function invalidateBotCache(workspaceId: string): void {
   bots.get(workspaceId)?.invalidateCache();
 }
 
-/** Envia uma mensagem no chat do workspace (usado por ações da interface). */
+/** Envia uma mensagem no chat do workspace pela conta do bot. */
 export async function sendWorkspaceMessage(workspaceId: string, message: string): Promise<void> {
   const bot = bots.get(workspaceId);
   if (bot) {
-    await bot.say(message);
+    const ok = await bot.say(message);
+    if (!ok) {
+      throw new Error('Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.');
+    }
     return;
   }
-  const conn = await getConnection(workspaceId);
-  if (!conn) throw new Error('Twitch não conectado a este workspace');
-  await sendChatMessage(conn, await ensureFreshToken(conn), message);
+  await sendWorkspaceChatMessage(workspaceId, message);
 }

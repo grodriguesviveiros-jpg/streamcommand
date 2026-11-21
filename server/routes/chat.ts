@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { loadWorkspace, requireAuth, requirePermission } from '../auth';
 import { withContext } from '../db';
-import { ensureFreshToken, getConnection, sendChatMessage, timeoutUser } from '../twitch';
+import { ensureFreshToken, getConnection, getConnections, sendChatMessage, timeoutUser } from '../twitch';
 import { logActivity } from '../activity';
 
 const router = Router();
@@ -28,14 +28,19 @@ router.post('/send', requirePermission('chat.send'), async (req, res) => {
     res.status(400).json({ error: 'Mensagem vazia.' });
     return;
   }
-  const connection = await getConnection(req.workspace!.id);
-  if (!connection) {
-    res.status(400).json({ error: 'Conecte a Twitch para enviar mensagens no chat.' });
+  // Mensagens do painel são enviadas pela conta do bot (user:write:chat).
+  const { streamer, bot } = await getConnections(req.workspace!.id);
+  if (!streamer) {
+    res.status(400).json({ error: 'Conecte a conta do streamer para identificar o canal.' });
+    return;
+  }
+  if (!bot) {
+    res.status(400).json({ error: 'Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.' });
     return;
   }
   try {
-    const token = await ensureFreshToken(connection);
-    await sendChatMessage(connection, token, message);
+    const token = await ensureFreshToken(bot);
+    await sendChatMessage(bot, token, streamer.twitch_user_id, message);
     await withContext({ userId: req.user!.id, workspaceId: req.workspace!.id }, (q) =>
       logActivity(q, {
         workspaceId: req.workspace!.id,
@@ -59,9 +64,9 @@ router.post('/timeout', requirePermission('chat.moderate'), async (req, res) => 
     res.status(400).json({ error: 'Usuário não informado.' });
     return;
   }
-  const connection = await getConnection(req.workspace!.id);
+  const connection = await getConnection(req.workspace!.id, 'streamer');
   if (!connection) {
-    res.status(400).json({ error: 'Conecte a Twitch para moderar o chat.' });
+    res.status(400).json({ error: 'Conecte a conta do streamer para moderar o chat.' });
     return;
   }
   try {

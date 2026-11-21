@@ -2,9 +2,14 @@ import { config } from './config';
 import { decryptSecret, encryptSecret } from './crypto';
 import { withContext, withWorkspace } from './db';
 
+export type TwitchConnectionType = 'streamer' | 'bot';
+export type TwitchConnectionStatus = 'active' | 'expired' | 'revoked' | 'error';
+
 export type TwitchConnection = {
   id: string;
   workspace_id: string;
+  connection_type: TwitchConnectionType;
+  status: TwitchConnectionStatus;
   twitch_user_id: string;
   login: string;
   display_name: string | null;
@@ -22,22 +27,69 @@ type ConnectionRow = Omit<TwitchConnection, 'access_token' | 'refresh_token'> & 
   refresh_token: string;
 };
 
-/** Carrega a conexão Twitch do workspace com os tokens descriptografados. */
-export async function getConnection(workspaceId: string): Promise<TwitchConnection | null> {
+/** Erro de autenticação de uma conexão específica (token expirado/revogado). */
+export class TwitchAuthError extends Error {
+  constructor(
+    public connectionType: TwitchConnectionType,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'TwitchAuthError';
+  }
+}
+
+/** Erro de operação que depende de uma conta conectada (ex.: bot ausente). */
+export class TwitchNotConnectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TwitchNotConnectedError';
+  }
+}
+
+export const twitchAccountLabel = (type: TwitchConnectionType): string =>
+  type === 'bot' ? 'do bot' : 'do streamer';
+
+function decryptRow(row: ConnectionRow): TwitchConnection {
+  return {
+    ...row,
+    access_token: decryptSecret(row.access_token),
+    refresh_token: decryptSecret(row.refresh_token),
+  };
+}
+
+/** Carrega uma conexão do workspace (streamer ou bot) com os tokens abertos. */
+export async function getConnection(
+  workspaceId: string,
+  type: TwitchConnectionType = 'streamer',
+): Promise<TwitchConnection | null> {
   return withWorkspace(workspaceId, async (q) => {
-    const { rows } = await q<ConnectionRow>('select * from twitch_connections where workspace_id = $1', [workspaceId]);
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      ...row,
-      access_token: decryptSecret(row.access_token),
-      refresh_token: decryptSecret(row.refresh_token),
-    };
+    const { rows } = await q<ConnectionRow>(
+      'select * from twitch_connections where workspace_id = $1 and connection_type = $2',
+      [workspaceId, type],
+    );
+    return rows[0] ? decryptRow(rows[0]) : null;
   });
+}
+
+/** Carrega as duas conexões do workspace de uma vez. */
+export async function getConnections(
+  workspaceId: string,
+): Promise<{ streamer: TwitchConnection | null; bot: TwitchConnection | null }> {
+  const rows = await withWorkspace(workspaceId, async (q) =>
+    (
+      await q<ConnectionRow>('select * from twitch_connections where workspace_id = $1', [workspaceId])
+    ).rows,
+  );
+  const find = (type: TwitchConnectionType) => {
+    const row = rows.find((item) => item.connection_type === type);
+    return row ? decryptRow(row) : null;
+  };
+  return { streamer: find('streamer'), bot: find('bot') };
 }
 
 export async function saveConnection(
   workspaceId: string,
+  type: TwitchConnectionType,
   data: {
     twitchUserId: string;
     login: string;
@@ -56,10 +108,11 @@ export async function saveConnection(
   await withContext({ userId: data.userId, workspaceId }, async (q) => {
     await q(
       `insert into twitch_connections
-         (workspace_id, twitch_user_id, login, display_name, avatar_url, broadcaster_type, scopes,
-          access_token, refresh_token, expires_at, connected_by, connected_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
-       on conflict (workspace_id) do update set
+         (workspace_id, connection_type, status, twitch_user_id, login, display_name, avatar_url,
+          broadcaster_type, scopes, access_token, refresh_token, expires_at, connected_by, connected_at)
+       values ($1,$2,'active',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+       on conflict (workspace_id, connection_type) do update set
+         status = 'active',
          twitch_user_id = excluded.twitch_user_id,
          login = excluded.login,
          display_name = excluded.display_name,
@@ -73,6 +126,7 @@ export async function saveConnection(
          connected_at = now()`,
       [
         workspaceId,
+        type,
         data.twitchUserId,
         data.login,
         data.displayName,
@@ -85,15 +139,37 @@ export async function saveConnection(
         data.userId,
       ],
     );
-    await q(`update workspaces set channel_name = $2, updated_at = now() where id = $1`, [workspaceId, data.login]);
+    // Só a conta do streamer identifica o canal do workspace.
+    if (type === 'streamer') {
+      await q(`update workspaces set channel_name = $2, updated_at = now() where id = $1`, [
+        workspaceId,
+        data.login,
+      ]);
+    }
   });
 }
 
-export async function deleteConnection(workspaceId: string): Promise<void> {
-  await withWorkspace(workspaceId, (q) => q('delete from twitch_connections where workspace_id = $1', [workspaceId]));
+export async function deleteConnection(workspaceId: string, type: TwitchConnectionType): Promise<void> {
+  await withWorkspace(workspaceId, (q) =>
+    q('delete from twitch_connections where workspace_id = $1 and connection_type = $2', [workspaceId, type]),
+  );
 }
 
-/** Renova o token do usuário quando estiver perto de expirar (refresh rotativo). */
+export async function setConnectionStatus(
+  workspaceId: string,
+  type: TwitchConnectionType,
+  status: TwitchConnectionStatus,
+): Promise<void> {
+  await withWorkspace(workspaceId, (q) =>
+    q('update twitch_connections set status = $3 where workspace_id = $1 and connection_type = $2', [
+      workspaceId,
+      type,
+      status,
+    ]),
+  );
+}
+
+/** Renova o token de UMA conexão quando estiver perto de expirar (refresh rotativo). */
 export async function ensureFreshToken(conn: TwitchConnection): Promise<string> {
   if (new Date(conn.expires_at).getTime() > Date.now() + 120_000) return conn.access_token;
 
@@ -108,23 +184,87 @@ export async function ensureFreshToken(conn: TwitchConnection): Promise<string> 
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
   });
-  if (!res.ok) throw new Error(`Twitch refresh falhou (${res.status})`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    if (res.status === 400 || res.status === 401) {
+      await setConnectionStatus(conn.workspace_id, conn.connection_type, 'expired').catch(() => undefined);
+      conn.status = 'expired';
+      throw new TwitchAuthError(
+        conn.connection_type,
+        `A conexão ${twitchAccountLabel(conn.connection_type)} expirou. Reconecte a conta Twitch.`,
+      );
+    }
+    throw new Error(
+      `Twitch refresh falhou (${res.status})${text ? `: ${text.slice(0, 160)}` : ''}`,
+    );
+  }
   const data = (await res.json()) as { access_token: string; refresh_token: string; expires_in: number };
   const expiresAt = new Date(Date.now() + data.expires_in * 1000);
 
   await withWorkspace(conn.workspace_id, (q) =>
-    q(`update twitch_connections set access_token=$2, refresh_token=$3, expires_at=$4, last_sync_at=now() where workspace_id=$1`, [
-      conn.workspace_id,
-      encryptSecret(data.access_token),
-      encryptSecret(data.refresh_token),
-      expiresAt.toISOString(),
-    ]),
+    q(
+      `update twitch_connections
+          set access_token=$3, refresh_token=$4, expires_at=$5, status='active', last_sync_at=now()
+        where workspace_id=$1 and connection_type=$2`,
+      [
+        conn.workspace_id,
+        conn.connection_type,
+        encryptSecret(data.access_token),
+        encryptSecret(data.refresh_token),
+        expiresAt.toISOString(),
+      ],
+    ),
   );
 
   conn.access_token = data.access_token;
   conn.refresh_token = data.refresh_token;
   conn.expires_at = expiresAt.toISOString();
+  conn.status = 'active';
   return data.access_token;
+}
+
+/** Revoga um token na Twitch (mecanismo oficial). Falha não bloqueia o logout local. */
+export async function revokeToken(token: string): Promise<void> {
+  if (!token) return;
+  const body = new URLSearchParams({ client_id: config.twitch.clientId, token });
+  await fetch('https://id.twitch.tv/oauth2/revoke', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  }).catch(() => undefined);
+}
+
+export type TwitchTokenValidation = {
+  clientId: string;
+  login: string | null;
+  userId: string | null;
+  scopes: string[];
+  expiresIn: number;
+};
+
+/** Consulta o /validate oficial: identidade, escopos e validade do token. */
+export async function validateToken(token: string): Promise<TwitchTokenValidation> {
+  const res = await fetch('https://id.twitch.tv/oauth2/validate', {
+    headers: { Authorization: `OAuth ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Token inválido na Twitch (${res.status})${text ? `: ${text.slice(0, 120)}` : ''}`);
+  }
+  const data = (await res.json()) as {
+    client_id: string;
+    login: string | null;
+    user_id: string | null;
+    scopes: string[];
+    expires_in: number;
+  };
+  return {
+    clientId: data.client_id,
+    login: data.login,
+    userId: data.user_id,
+    scopes: data.scopes ?? [],
+    expiresIn: data.expires_in,
+  };
 }
 
 type HelixResponse<T> = { data: T[]; total?: number; pagination?: { cursor?: string } };
@@ -206,7 +346,17 @@ export async function getFollowerCount(conn: TwitchConnection, token: string): P
   }
 }
 
-export async function sendChatMessage(conn: TwitchConnection, token: string, message: string): Promise<string | null> {
+/**
+ * Envia uma mensagem no chat do canal usando a conta do bot.
+ * O token precisa ser da conta do bot (user:write:chat) e o canal precisa ter
+ * autorizado o app com `channel:bot` (ou o bot ser moderador).
+ */
+export async function sendChatMessage(
+  bot: TwitchConnection,
+  token: string,
+  broadcasterId: string,
+  message: string,
+): Promise<string | null> {
   const res = await fetch('https://api.twitch.tv/helix/chat/messages', {
     method: 'POST',
     headers: {
@@ -215,8 +365,8 @@ export async function sendChatMessage(conn: TwitchConnection, token: string, mes
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      broadcaster_id: conn.twitch_user_id,
-      sender_id: conn.twitch_user_id,
+      broadcaster_id: broadcasterId,
+      sender_id: bot.twitch_user_id,
       message: message.slice(0, 500),
     }),
   });
@@ -231,15 +381,37 @@ export async function sendChatMessage(conn: TwitchConnection, token: string, mes
   return entry?.message_id ?? null;
 }
 
+/**
+ * Envia no chat do workspace pela conta do bot. Sem bot conectado (ou sem o
+ * canal do streamer) a operação falha com uma mensagem clara — nunca finge
+ * que o envio pelo bot funciona.
+ */
+export async function sendWorkspaceChatMessage(workspaceId: string, message: string): Promise<string | null> {
+  const { streamer, bot } = await getConnections(workspaceId);
+  if (!streamer) {
+    throw new TwitchNotConnectedError(
+      'Conecte a conta do streamer para identificar o canal onde o bot deve falar.',
+    );
+  }
+  if (!bot) {
+    throw new TwitchNotConnectedError(
+      'Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.',
+    );
+  }
+  const token = await ensureFreshToken(bot);
+  return sendChatMessage(bot, token, streamer.twitch_user_id, message);
+}
+
+/** Moderação sempre usa a conta do streamer (dona do canal). */
 export async function timeoutUser(
-  conn: TwitchConnection,
+  streamer: TwitchConnection,
   token: string,
   targetUserId: string,
   durationSeconds: number,
   reason: string,
 ): Promise<void> {
   const res = await fetch(
-    `https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${conn.twitch_user_id}&moderator_id=${conn.twitch_user_id}`,
+    `https://api.twitch.tv/helix/moderation/bans?broadcaster_id=${streamer.twitch_user_id}&moderator_id=${streamer.twitch_user_id}`,
     {
       method: 'POST',
       headers: {
