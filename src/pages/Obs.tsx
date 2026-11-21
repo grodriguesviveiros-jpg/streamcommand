@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Circle, Mic, MonitorPlay, Plug, Radio, Square, Video } from 'lucide-react';
 import { get, put } from '../lib/api';
-import { obs, type ObsInput, type ObsScene } from '../lib/obs';
+import { isDesktopApp, obs, type ObsInput, type ObsScene } from '../lib/obs';
 import { Badge, Button, Card, ErrorBanner, Field, Input, PageHeader, Spinner } from '../components/ui';
 
 type ObsSettings = { host: string; port: number; hasPassword: boolean };
@@ -19,7 +19,9 @@ export default function Obs() {
   const [streaming, setStreaming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const httpsPage = window.location.protocol === 'https:';
+  // No aplicativo desktop a conexão com o OBS sai pelo processo nativo, então
+  // o bloqueio de ws:// em páginas HTTPS não se aplica.
+  const httpsPage = window.location.protocol === 'https:' && !isDesktopApp();
 
   useEffect(() => {
     get<ObsSettings>('/integrations/obs')

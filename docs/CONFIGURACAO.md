@@ -131,16 +131,21 @@ preencha os dois cards:
 
 1. **Conta do streamer** — conta principal do canal. Identifica a live, consulta informações do canal e
    recebe follows, inscrições, raids e o início/fim da transmissão.
-2. **Conta do bot** — segunda conta, separada. Envia mensagens no chat, responde comandos, automações e
-   timers. Pode ser uma conta Twitch diferente da conta do streamer; cada uma autentica no próprio OAuth.
+2. **Conta do bot** (opcional) — segunda conta, separada, para ler o chat e responder comandos,
+   automações e timers com outra identidade. Pode ser uma conta Twitch diferente da conta do streamer; cada
+   uma autentica no próprio OAuth. Sem ela, a leitura e o envio usam a conta do streamer.
 
 A conta do streamer autoriza `channel:bot`, permitindo ao aplicativo falar no chat do canal pela conta
-do bot. Sem a conta do bot conectada, a interface informa que os recursos de envio estão indisponíveis.
+do bot. Sem a conta do bot conectada, o chat é lido e enviado pela própria conta do streamer (para isso
+ela precisa autorizar `user:read:chat` e `user:write:chat`). A página **Chat** mostra exatamente o que
+falta quando a Twitch recusa a leitura ou o envio.
 
 Escopos usados e por quê:
 | Conta | Escopo | Para que serve |
 | --- | --- | --- |
 | streamer | `user:read:email` | identificar a conta conectada |
+| streamer | `user:read:chat` | ler o chat do canal quando não há conta de bot |
+| streamer | `user:write:chat` | enviar mensagens pela conta do streamer |
 | streamer | `channel:bot` | autorizar o app a enviar/ler o chat do canal como bot |
 | streamer | `moderator:read:followers` | receber evento de novos seguidores |
 | streamer | `moderator:manage:banned_users` | aplicar timeout/ban |
@@ -152,6 +157,19 @@ Escopos usados e por quê:
 > Cada conta tem tokens próprios, renovados de forma independente e **criptografados** no banco
 > (AES-256-GCM). Ao desconectar, os tokens são revogados na Twitch; desconectar o bot não afeta o streamer
 > e vice-versa.
+
+### Se o chat não recebe ou não envia mensagens
+A página **Chat** mostra um aviso com o motivo exato. Causas mais comuns:
+
+| Sintoma | Causa | Correção |
+| --- | --- | --- |
+| Nenhuma mensagem aparece | A conta que lê o chat não autorizou `user:read:chat` | Reconecte a conta do bot (ou, sem bot, a conta do streamer) |
+| A Twitch recusa a assinatura do chat | O canal não autorizou `channel:bot` | Reconecte a conta do streamer |
+| Envio falha com 401/403 | A conta remetente não tem `user:write:chat` | Reconecte a conta escolhida em **Quem envia as mensagens** |
+| Nada chega e a conta aparece conectada | Token antigo, de antes de um escopo novo | Clique em **Reconectar** nos dois cards |
+
+O status só fica "conectado" quando a Twitch aceita a assinatura `channel.chat.message` — não basta a
+conta estar salva no banco.
 
 ---
 
@@ -165,7 +183,8 @@ Escopos usados e por quê:
 6. Abra **OBS Studio** no menu lateral e clique em **Conectar ao OBS**.
 
 Importante: o navegador só permite `ws://` a partir de páginas `http://`. Use
-`http://localhost:3000` ou a versão desktop (Tauri). Em HTTPS o app avisa isso na própria tela.
+`http://localhost:3000` ou o **aplicativo desktop**, que faz a conexão com o OBS pelo processo nativo e
+funciona também em HTTPS — veja [docs/DESKTOP.md](DESKTOP.md) para gerar o instalador.
 
 ---
 

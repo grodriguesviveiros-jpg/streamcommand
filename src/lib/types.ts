@@ -85,13 +85,15 @@ export type TwitchBotStatus = {
   streamer?: boolean;
   bot?: boolean;
   events?: string;
-  chatSender?: 'bot' | null;
+  chatSender?: 'bot' | 'streamer' | null;
   detail?: string | null;
 };
 
 export type TwitchConnectionInfo = {
   configured: boolean;
   redirectUri: string;
+  /** Conta escolhida pelo workspace para enviar mensagens no chat. */
+  chatSender: TwitchAccountType;
   bot: TwitchBotStatus;
   connections: {
     streamer: TwitchAccount | null;

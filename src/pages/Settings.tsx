@@ -8,6 +8,7 @@ import type { TwitchConnectionInfo } from '../lib/types';
 import { Badge, Button, Card, ColorField, ConfirmButton, ErrorBanner, Field, Input, PageHeader, Select, Spinner, SuccessBanner, Tabs, Toggle } from '../components/ui';
 import { formatDateTime } from '../lib/format';
 import TwitchAccountCard from '../components/TwitchAccountCard';
+import ChatSenderCard from '../components/ChatSenderCard';
 
 const SECTIONS = [
   { value: 'perfil', label: 'Perfil' },
@@ -228,8 +229,9 @@ export default function Settings() {
               O STREAM COMMAND trabalha com <strong className="text-white">duas contas Twitch independentes</strong> por
               workspace. A conta do <strong className="text-white">streamer</strong> identifica o canal e recebe os
               eventos (follows, inscrições, raids e live). A conta do <strong className="text-white">bot</strong> é uma
-              segunda conta, separada, usada para enviar mensagens, responder comandos e postar timers. Cada conexão tem
-              seus próprios tokens, escopos e estado.
+              segunda conta, separada, usada para ler o chat (sem ela, a leitura usa a própria conta do streamer). Você
+              escolhe abaixo qual das duas envia as mensagens, respostas de comandos e timers. Cada conexão tem seus
+              próprios tokens, escopos e estado.
             </p>
             {twitch.data?.sameAccount ? (
               <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
@@ -238,12 +240,21 @@ export default function Settings() {
               </p>
             ) : null}
             {twitch.data && !twitch.data.connections?.bot ? (
-              <p className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-200">
-                Conta do bot não conectada: os recursos de envio pelo bot (mensagens automáticas, comandos e timers)
-                estão indisponíveis até conectar uma conta.
+              <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                Conta do bot não conectada: o chat é lido e enviado pela conta do streamer (ela precisa ter autorizado
+                user:read:chat). Conecte uma conta de bot para responder com outra identidade.
               </p>
             ) : null}
           </Card>
+
+          {twitch.data ? (
+            <ChatSenderCard
+              preference={twitch.data.chatSender ?? 'bot'}
+              streamer={twitch.data.connections?.streamer ?? null}
+              bot={twitch.data.connections?.bot ?? null}
+              onChanged={() => twitch.reload()}
+            />
+          ) : null}
 
           {twitch.loading ? <Spinner /> : null}
 

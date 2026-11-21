@@ -347,12 +347,13 @@ export async function getFollowerCount(conn: TwitchConnection, token: string): P
 }
 
 /**
- * Envia uma mensagem no chat do canal usando a conta do bot.
- * O token precisa ser da conta do bot (user:write:chat) e o canal precisa ter
- * autorizado o app com `channel:bot` (ou o bot ser moderador).
+ * Envia uma mensagem no chat do canal com a conta remetente escolhida.
+ * O token precisa ter `user:write:chat`; quando quem envia não é o canal, o
+ * canal também precisa ter autorizado o app com `channel:bot` (ou o remetente
+ * ser moderador).
  */
 export async function sendChatMessage(
-  bot: TwitchConnection,
+  sender: TwitchConnection,
   token: string,
   broadcasterId: string,
   message: string,
@@ -366,7 +367,7 @@ export async function sendChatMessage(
     },
     body: JSON.stringify({
       broadcaster_id: broadcasterId,
-      sender_id: bot.twitch_user_id,
+      sender_id: sender.twitch_user_id,
       message: message.slice(0, 500),
     }),
   });
@@ -381,25 +382,70 @@ export async function sendChatMessage(
   return entry?.message_id ?? null;
 }
 
+/** Conta que envia mensagens no chat, conforme a escolha do workspace. */
+export async function getChatSenderPreference(workspaceId: string): Promise<TwitchConnectionType> {
+  const rows = await withWorkspace(workspaceId, (q) =>
+    q<{ preferences: Record<string, unknown> | null }>('select preferences from workspaces where id = $1', [
+      workspaceId,
+    ]),
+  );
+  return rows.rows[0]?.preferences?.chat_sender === 'streamer' ? 'streamer' : 'bot';
+}
+
+export type ChatSender = {
+  type: TwitchConnectionType;
+  connection: TwitchConnection;
+  token: string;
+  broadcasterId: string;
+};
+
 /**
- * Envia no chat do workspace pela conta do bot. Sem bot conectado (ou sem o
- * canal do streamer) a operação falha com uma mensagem clara — nunca finge
- * que o envio pelo bot funciona.
+ * Escolhe a conta que envia mensagens no chat. A preferência do workspace
+ * (`preferences.chat_sender`) é respeitada. A única exceção é quando a conta
+ * escolhida nunca foi conectada e a outra existe (workspace com uma conta só):
+ * nesse caso a conta do streamer envia e o tipo devolvido diz qual foi usada.
+ */
+export async function resolveChatSender(
+  workspaceId: string,
+  connections?: { streamer: TwitchConnection | null; bot: TwitchConnection | null },
+): Promise<ChatSender> {
+  const { streamer, bot } = connections ?? (await getConnections(workspaceId));
+  if (!streamer) {
+    throw new TwitchNotConnectedError('Conecte a conta do streamer para identificar o canal.');
+  }
+  const preferred = await getChatSenderPreference(workspaceId);
+  // A preferência só manda quando a conta escolhida existe: sem nenhuma conta
+  // de bot conectada, a conta do streamer é a única disponível e envia.
+  const type: TwitchConnectionType = preferred === 'bot' && !bot ? 'streamer' : preferred;
+  const connection = type === 'streamer' ? streamer : bot;
+  if (!connection) {
+    throw new TwitchNotConnectedError(
+      type === 'bot'
+        ? 'Conta do bot não conectada — escolha a conta do streamer em Configurações → Twitch ou conecte o bot.'
+        : 'Conta do streamer não conectada — escolha a conta do bot ou reconecte o streamer.',
+    );
+  }
+  if (type === 'streamer' && !connection.scopes.includes('user:write:chat')) {
+    throw new TwitchNotConnectedError(
+      'A conta do streamer ainda não autorizou o envio de mensagens (user:write:chat). Reconecte a conta em Configurações → Twitch.',
+    );
+  }
+  return {
+    type,
+    connection,
+    token: await ensureFreshToken(connection),
+    broadcasterId: streamer.twitch_user_id,
+  };
+}
+
+/**
+ * Envia no chat do workspace pela conta escolhida (bot ou streamer). Sem a
+ * conta escolhida conectada (ou sem o canal do streamer) a operação falha com
+ * uma mensagem clara — nunca finge que o envio funciona.
  */
 export async function sendWorkspaceChatMessage(workspaceId: string, message: string): Promise<string | null> {
-  const { streamer, bot } = await getConnections(workspaceId);
-  if (!streamer) {
-    throw new TwitchNotConnectedError(
-      'Conecte a conta do streamer para identificar o canal onde o bot deve falar.',
-    );
-  }
-  if (!bot) {
-    throw new TwitchNotConnectedError(
-      'Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.',
-    );
-  }
-  const token = await ensureFreshToken(bot);
-  return sendChatMessage(bot, token, streamer.twitch_user_id, message);
+  const sender = await resolveChatSender(workspaceId);
+  return sendChatMessage(sender.connection, sender.token, sender.broadcasterId, message);
 }
 
 /** Moderação sempre usa a conta do streamer (dona do canal). */

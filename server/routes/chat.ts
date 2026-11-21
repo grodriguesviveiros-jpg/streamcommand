@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { loadWorkspace, requireAuth, requirePermission } from '../auth';
 import { withContext } from '../db';
-import { ensureFreshToken, getConnection, getConnections, sendChatMessage, timeoutUser } from '../twitch';
+import {
+  ensureFreshToken,
+  getConnection,
+  resolveChatSender,
+  sendChatMessage,
+  timeoutUser,
+  TwitchNotConnectedError,
+} from '../twitch';
 import { logActivity } from '../activity';
 
 const router = Router();
@@ -28,19 +35,10 @@ router.post('/send', requirePermission('chat.send'), async (req, res) => {
     res.status(400).json({ error: 'Mensagem vazia.' });
     return;
   }
-  // Mensagens do painel são enviadas pela conta do bot (user:write:chat).
-  const { streamer, bot } = await getConnections(req.workspace!.id);
-  if (!streamer) {
-    res.status(400).json({ error: 'Conecte a conta do streamer para identificar o canal.' });
-    return;
-  }
-  if (!bot) {
-    res.status(400).json({ error: 'Conta do bot não conectada — o envio de mensagens pelo bot está indisponível.' });
-    return;
-  }
+  // Mensagens do painel são enviadas pela conta escolhida no workspace (bot ou streamer).
   try {
-    const token = await ensureFreshToken(bot);
-    await sendChatMessage(bot, token, streamer.twitch_user_id, message);
+    const sender = await resolveChatSender(req.workspace!.id);
+    await sendChatMessage(sender.connection, sender.token, sender.broadcasterId, message);
     await withContext({ userId: req.user!.id, workspaceId: req.workspace!.id }, (q) =>
       logActivity(q, {
         workspaceId: req.workspace!.id,
@@ -50,8 +48,12 @@ router.post('/send', requirePermission('chat.send'), async (req, res) => {
         target: message.slice(0, 80),
       }),
     );
-    res.json({ ok: true });
+    res.json({ ok: true, sender: sender.type });
   } catch (error) {
+    if (error instanceof TwitchNotConnectedError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     res.status(502).json({ error: error instanceof Error ? error.message : 'Falha ao enviar mensagem' });
   }
 });
